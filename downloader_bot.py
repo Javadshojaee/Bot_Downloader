@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import threading
 from dotenv import load_dotenv
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 import yt_dlp
@@ -14,6 +16,17 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+
+# ساخت وب‌سرور سبک برای تایید پورت در Render
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
 
 # افزایش سقف حجم مجاز به 750 مگابایت
 MAX_FILE_SIZE_MB = 750
@@ -33,10 +46,12 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def run_download(url, output_template):
     """دانلود تمام پسوندها و کیفیت‌ها با yt-dlp و ترکیب خودکار با FFmpeg به MP4"""
+    # مسیر FFmpeg: در ویندوز مسیر دستی، در لینوکس سرور مسیر سیستمی
+    ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
+
     ydl_opts = {
         'format': 'bestvideo+bestaudio/best',
         'merge_output_format': 'mp4',
-        'ffmpeg_location': r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin',
         'outtmpl': output_template,
         'max_filesize': MAX_FILE_SIZE_MB * 1024 * 1024,
         'noplaylist': True,
@@ -47,6 +62,9 @@ def run_download(url, output_template):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
     }
+    if ffmpeg_path:
+        ydl_opts['ffmpeg_location'] = ffmpeg_path
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
@@ -147,6 +165,9 @@ def main():
     if not BOT_TOKEN:
         print("❌ توکن یافت نشد!")
         return
+
+    # اجرای وب‌سرور فلاسک در پس‌زمینه برای باز کردن پورت مورد نیاز رندر
+    threading.Thread(target=run_web_server, daemon=True).start()
 
     application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(300).write_timeout(300).connect_timeout(60).pool_timeout(60).build()
 
