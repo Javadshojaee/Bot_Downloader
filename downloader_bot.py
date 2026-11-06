@@ -17,7 +17,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ساخت وب‌سرور سبک برای تایید پورت در Render
+# وب‌سرور سبک Flask برای زنده نگه داشتن پورت در Render
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -28,14 +28,14 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host="0.0.0.0", port=port)
 
-# افزایش سقف حجم مجاز به 750 مگابایت
+# سقف حجم مجاز: ۷۵۰ مگابایت
 MAX_FILE_SIZE_MB = 750
 CORRECT_PASSWORD = "KLi12"
 
-# ذخیره وضعیت کاربران تایید شده
+# کاربرانی که رمز رو درست زدند
 authorized_users = set()
 
-# دکمه شیشه‌ای / متنی کیبورد برای ریستارت
+# دکمه کیبورد برای ریستارت ربات
 restart_keyboard = ReplyKeyboardMarkup(
     [["🔄 شروع مجدد / خروج"]],
     resize_keyboard=True
@@ -52,8 +52,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, output_template):
-    """دانلود تمام پسوندها و کیفیت‌ها با yt-dlp و ترکیب خودکار با FFmpeg به MP4"""
-    # مسیر FFmpeg: در ویندوز مسیر دستی، در لینوکس سرور مسیر سیستمی
+    """دانلود با تنظیمات دور زدن محدودیت‌های یوتیوب"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
@@ -65,18 +64,23 @@ def run_download(url, output_template):
         'socket_timeout': 120,
         'retries': 20,
         'fragment_retries': 20,
-        # تنظیم کلاینت‌ها برای جلوگیری از ارور Sign in یوتیوب 👇
+        # شبیه‌سازی اپلیکیشن iOS و نسخه موبایل برای رد شدن از سد بات یوتیوب
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web']
+                'player_client': ['ios', 'mweb'],
+                'player_skip': ['webpage', 'configs']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
         }
     }
     if ffmpeg_path:
         ydl_opts['ffmpeg_location'] = ffmpeg_path
+
+    # اگر در آینده خواستی کوکی بذاری، خط زیر رو از کامنت خارج می‌کنی:
+    if os.path.exists('cookies.txt'):
+        ydl_opts['cookiefile'] = 'cookies.txt'
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -85,7 +89,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # اگر کاربر دستور /start داد یا دکمه ریستارت رو زد
+    # اگر دکمه ریستارت زده شد یا دستور start
     if text == "/start" or text == "🔄 شروع مجدد / خروج":
         if user_id in authorized_users:
             authorized_users.remove(user_id)
@@ -104,7 +108,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"سلام {user_name} گل! 🤖🔥\n\n"
                 f"لینک ویدیو رو بفرست تا با بالاترین کیفیت برات دانلود و ارسال کنم!\n"
                 f"📌 حداکثر حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.\n\n"
-                f"💡 برای ریستارت، می‌تونی از دکمه زیر استفاده کنی.",
+                f"💡 برای شروع دوباره، می‌تونی از دکمه ریستارت زیر استفاده کنی:",
                 reply_markup=restart_keyboard
             )
         else:
@@ -183,7 +187,6 @@ def main():
         print("❌ توکن یافت نشد!")
         return
 
-    # اجرای وب‌سرور فلاسک در پس‌زمینه برای باز کردن پورت مورد نیاز رندر
     threading.Thread(target=run_web_server, daemon=True).start()
 
     application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(300).write_timeout(300).connect_timeout(60).pool_timeout(60).build()
