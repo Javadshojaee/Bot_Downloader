@@ -52,11 +52,12 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, output_template):
-    """دانلود با تنظیمات دور زدن محدودیت‌های یوتیوب"""
+    """دانلود با فرمت همه‌کاره و پشتیبانی کامل از کوکی"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
-        'format': 'bestvideo+bestaudio/best',
+        # فرمت استاندارد و منعطف برای دریافت بدون خطای فرمت
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
         'merge_output_format': 'mp4',
         'outtmpl': output_template,
         'max_filesize': MAX_FILE_SIZE_MB * 1024 * 1024,
@@ -64,21 +65,14 @@ def run_download(url, output_template):
         'socket_timeout': 120,
         'retries': 20,
         'fragment_retries': 20,
-        # شبیه‌سازی اپلیکیشن iOS و نسخه موبایل برای رد شدن از سد بات یوتیوب
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'mweb'],
-                'player_skip': ['webpage', 'configs']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
-        }
+        'quiet': False,
+        'no_warnings': False,
     }
+
     if ffmpeg_path:
         ydl_opts['ffmpeg_location'] = ffmpeg_path
 
-    # اگر در آینده خواستی کوکی بذاری، خط زیر رو از کامنت خارج می‌کنی:
+    # شناسایی خودکار فایل کوکی
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
@@ -103,9 +97,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in authorized_users:
         if text == CORRECT_PASSWORD:
             authorized_users.add(user_id)
-            user_name = update.effective_user.first_name or "عمو جواد"
             await update.message.reply_text(
-                f"سلام {user_name} گل! 🤖🔥\n\n"
+                f"سلام دوست من! 🤖🔥\n\n"
                 f"لینک ویدیو رو بفرست تا با بالاترین کیفیت برات دانلود و ارسال کنم!\n"
                 f"📌 حداکثر حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.\n\n"
                 f"💡 برای شروع دوباره، می‌تونی از دکمه ریستارت زیر استفاده کنی:",
@@ -119,11 +112,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = text
     if not url.startswith("http"):
-        await update.message.reply_text("❌ لطفاً یک لینک معتبر بفرست داداشم!")
+        await update.message.reply_text("❌ لطفاً یک لینک معتبر بفرست!")
         return
 
     status_msg = await update.message.reply_text(
-        "📥 در حال دانلود ویدیو و ترکیب با FFmpeg... صبور باش داداش 🙏\n"
+        "📥 در حال دانلود ویدیو و ترکیب با FFmpeg... صبور باش دوست من 🙏\n"
         "بدلیل حجم زیاد ویدیو ممکن است کمی زمان ببرد..."
     )
 
@@ -199,4 +192,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
