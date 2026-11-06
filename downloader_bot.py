@@ -7,7 +7,6 @@ from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 import yt_dlp
-from httpx import Timeout
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -30,7 +29,7 @@ def run_web_server():
 
 # سقف حجم مجاز: ۷۵۰ مگابایت
 MAX_FILE_SIZE_MB = 750
-CORRECT_PASSWORD = "*******"
+CORRECT_PASSWORD = "KLi123"
 
 # کاربرانی که رمز رو درست زدند
 authorized_users = set()
@@ -52,7 +51,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, output_template):
-    """دانلود با تنظیمات ضد ربات و کلاینت وب پایدار"""
+    """دانلود عمومی و قدرتمند برای یوتیوب، اینستاگرام، آپارات، تیک‌تاک و غیره"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
@@ -62,12 +61,12 @@ def run_download(url, output_template):
         'max_filesize': MAX_FILE_SIZE_MB * 1024 * 1024,
         'noplaylist': True,
         'socket_timeout': 60,
-        'retries': 15,
-        'fragment_retries': 15,
-        # استفاده از کلاینت وب و موبایل وب برای دور زدن چالش ربات یوتیوب
+        'retries': 20,
+        'fragment_retries': 20,
+        # تنظیم کلاینت مخصوص یوتیوب برای دور زدن ربات‌چک
         'extractor_args': {
             'youtube': {
-                'player_client': ['web', 'mweb'],
+                'player_client': ['ios', 'mweb', 'web'],
             }
         },
         'quiet': False,
@@ -77,7 +76,7 @@ def run_download(url, output_template):
     if ffmpeg_path:
         ydl_opts['ffmpeg_location'] = ffmpeg_path
 
-    # خواندن فایل کوکی اگر موجود باشد
+    # خواندن فایل کوکی در صورت وجود
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
@@ -103,8 +102,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == CORRECT_PASSWORD:
             authorized_users.add(user_id)
             await update.message.reply_text(
-                f"سلام دوست من! 🤖🔥\n\n"
-                f"لینک ویدیو رو بفرست تا با بالاترین کیفیت برات دانلود و ارسال کنم!\n"
+                f"سلام عمو جواد عزیز! 🤖🔥\n\n"
+                f"لینک ویدیو (یوتیوب، اینستاگرام، آپارات، تیک‌تاک و...) رو بفرست تا با بالاترین کیفیت برات دانلود و ارسال کنم!\n"
                 f"📌 حداکثر حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.\n\n"
                 f"💡 برای شروع دوباره، می‌تونی از دکمه ریستارت زیر استفاده کنی:",
                 reply_markup=restart_keyboard
@@ -121,8 +120,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     status_msg = await update.message.reply_text(
-        "📥 در حال دانلود ویدیو و پردازش نهایی... صبور باش دوست من 🙏\n"
-        "بدلیل حجم یا کیفیت ممکن است چند لحظه طول بکشد..."
+        "📥 در حال دانلود ویدیو از پلتفرم مربوطه و پردازش نهایی... صبور باش دوست من 🙏"
     )
 
     output_filename = f"video_{user_id}.mp4"
