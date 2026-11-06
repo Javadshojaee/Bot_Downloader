@@ -51,7 +51,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, user_id):
-    """تابع دانلود با yt-dlp و استفاده مستقیم از کوکی مرورگر برای دور زدن خطای ربات نبودن"""
+    """تابع دانلود با yt-dlp بدون نیاز به کوکی مرورگر (سازگار با هاست ابری و لوکال)"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
@@ -65,14 +65,12 @@ def run_download(url, user_id):
         'fragment_retries': 20,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'mweb', 'web'],
+                'player_client': ['android', 'ios', 'web'],
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'quiet': False,
         'no_warnings': False,
-        # خواندن مستقیم کوکی از مرورگر کروم برای جلوگیری از خطای Sign in to confirm
-        'cookiesfrombrowser': ('chrome',),
     }
 
     if ffmpeg_path and os.path.exists(ffmpeg_path):
@@ -100,7 +98,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == CORRECT_PASSWORD:
             authorized_users.add(user_id)
             await update.message.reply_text(
-                f"سلام! 🤖🔥\n\n"
+                f"سلام عمو جواد! 🤖🔥\n\n"
                 f"لینک ویدیو (یوتیوب، اینستاگرام، آپارات، تیک‌تاک و...) رو بفرست تا با بالاترین کیفیت برات دانلود کنم!\n"
                 f"📌 سقف حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.",
                 reply_markup=restart_keyboard
@@ -122,7 +120,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     status_msg = await update.message.reply_text(
-        "📥 در حال دانلود و آماده‌سازی ویدیو... لطفاً صبور باش 🙏"
+        "📥 در حال دانلود و آماده‌سازی ویدیو... لطفاً صبور باش عمو جان 🙏"
     )
 
     try:
