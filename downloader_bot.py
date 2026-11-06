@@ -51,7 +51,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, user_id):
-    """تابع دانلود با yt-dlp بدون نیاز به کوکی مرورگر (سازگار با هاست ابری و لوکال)"""
+    """تابع دانلود با تنظیمات پیشرفته برای عبور از فیلترینگ یوتیوب روی هاست ابری"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
@@ -61,14 +61,20 @@ def run_download(url, user_id):
         'max_filesize': MAX_FILE_SIZE_MB * 1024 * 1024,
         'noplaylist': True,
         'socket_timeout': 60,
-        'retries': 20,
-        'fragment_retries': 20,
+        'retries': 30,
+        'fragment_retries': 30,
+        # استفاده از ترکیب کلاینت‌های اندروید و وب با هدرهای واقعی برای دور زدن بلاک سرور
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web'],
+                'player_client': ['android', 'web'],
             }
         },
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Sec-Fetch-Mode': 'navigate',
+        },
         'quiet': False,
         'no_warnings': False,
     }
@@ -83,7 +89,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # مدیریت دکمه خروج یا دستور start
     if text == "/start" or text == "🔄 شروع مجدد / خروج":
         if user_id in authorized_users:
             authorized_users.remove(user_id)
@@ -93,13 +98,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # بررسی رمز عبور
     if user_id not in authorized_users:
         if text == CORRECT_PASSWORD:
             authorized_users.add(user_id)
             await update.message.reply_text(
                 f"سلام عمو جواد! 🤖🔥\n\n"
-                f"لینک ویدیو (یوتیوب، اینستاگرام، آپارات، تیک‌تاک و...) رو بفرست تا با بالاترین کیفیت برات دانلود کنم!\n"
+                f"لینک ویدیو رو بفرست تا با بالاترین کیفیت برات دانلود کنم!\n"
                 f"📌 سقف حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.",
                 reply_markup=restart_keyboard
             )
@@ -112,7 +116,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ لطفاً یک لینک اینترنتی معتبر بفرست!")
         return
 
-    # پاکسازی فایل‌های باقی‌مانده احتمالی قبلی
     for old_file in glob.glob(f"dl_{user_id}.*"):
         try:
             os.remove(old_file)
@@ -124,11 +127,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # اجرای دانلود در ترد جداگانه بدون بلاک کردن ربات
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, run_download, url, user_id)
 
-        # پیدا کردن فایل خروجی با هر پسوندی که تولید شده (mp4, mkv, webm و غیره)
         matching_files = [f for f in glob.glob(f"dl_{user_id}.*") if not f.endswith('.part') and not f.endswith('.ytdl')]
         
         if not matching_files:
@@ -162,7 +163,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     finally:
-        # پاکسازی نهایی دیسک
         for leftover in glob.glob(f"dl_{user_id}.*"):
             try:
                 os.remove(leftover)
@@ -174,10 +174,8 @@ def main():
         print("❌ متغیر BOT_TOKEN یافت نشد!")
         return
 
-    # استارت سرور Flask در پس‌زمینه برای Render
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    # ساخت اپلیکیشن تلگرام با تایم‌اوت‌های استاندارد
     application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(360).write_timeout(360).connect_timeout(60).pool_timeout(60).build()
 
     application.add_handler(CommandHandler("start", start_handler))
