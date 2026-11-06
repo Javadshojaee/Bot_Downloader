@@ -4,7 +4,7 @@ import os
 import threading
 from dotenv import load_dotenv
 from flask import Flask
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 import yt_dlp
 from httpx import Timeout
@@ -35,13 +35,20 @@ CORRECT_PASSWORD = "KLi12"
 # ذخیره وضعیت کاربران تایید شده
 authorized_users = set()
 
+# دکمه شیشه‌ای / متنی کیبورد برای ریستارت
+restart_keyboard = ReplyKeyboardMarkup(
+    [["🔄 شروع مجدد / خروج"]],
+    resize_keyboard=True
+)
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in authorized_users:
         authorized_users.remove(user_id)
         
     await update.message.reply_text(
-        "سلام! 🤖\n\nلطفاً رمز عبور را وارد نمایید:"
+        "سلام! 🤖\n\nلطفاً رمز عبور را وارد نمایید:",
+        reply_markup=ReplyKeyboardRemove()
     )
 
 def run_download(url, output_template):
@@ -58,6 +65,12 @@ def run_download(url, output_template):
         'socket_timeout': 120,
         'retries': 20,
         'fragment_retries': 20,
+        # تنظیم کلاینت‌ها برای جلوگیری از ارور Sign in یوتیوب 👇
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web']
+            }
+        },
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
@@ -72,11 +85,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # اگر کاربر دستور /start فرستاد
-    if text == "/start":
+    # اگر کاربر دستور /start داد یا دکمه ریستارت رو زد
+    if text == "/start" or text == "🔄 شروع مجدد / خروج":
         if user_id in authorized_users:
             authorized_users.remove(user_id)
-        await update.message.reply_text("🔄 ربات ریست شد!\n\nلطفاً رمز عبور را وارد نمایید:")
+        await update.message.reply_text(
+            "🔄 ربات ریست شد!\n\nلطفاً رمز عبور را وارد نمایید:",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
 
     # بررسی رمز عبور
@@ -88,7 +104,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"سلام {user_name} گل! 🤖🔥\n\n"
                 f"لینک ویدیو رو بفرست تا با بالاترین کیفیت برات دانلود و ارسال کنم!\n"
                 f"📌 حداکثر حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.\n\n"
-                f"*(برای شروع مجدد می‌توانی دستور /start را ارسال کنی)*"
+                f"💡 برای ریستارت، می‌تونی از دکمه زیر استفاده کنی.",
+                reply_markup=restart_keyboard
             )
         else:
             await update.message.reply_text(
@@ -103,7 +120,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_msg = await update.message.reply_text(
         "📥 در حال دانلود ویدیو و ترکیب با FFmpeg... صبور باش داداش 🙏\n"
-        "بدلیل حجم زیاد ویدیو ویدیو دیرتر دانلود میشود صبور باشید"
+        "بدلیل حجم زیاد ویدیو ممکن است کمی زمان ببرد..."
     )
 
     output_filename = f"video_{user_id}.mp4"
@@ -174,8 +191,9 @@ def main():
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🤖 ربات با موفقیت و بدون دکمه‌های دردسرساز روشن شد...")
+    print("🤖 ربات با موفقیت و دکمه ریستارت روشن شد...")
     application.run_polling()
 
 if __name__ == '__main__':
     main()
+
