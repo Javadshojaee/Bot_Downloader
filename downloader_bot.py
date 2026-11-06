@@ -30,7 +30,7 @@ def run_web_server():
 
 # سقف حجم مجاز: ۷۵۰ مگابایت
 MAX_FILE_SIZE_MB = 750
-CORRECT_PASSWORD = "KLi12"
+CORRECT_PASSWORD = "*******"
 
 # کاربرانی که رمز رو درست زدند
 authorized_users = set()
@@ -52,11 +52,10 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, output_template):
-    """دانلود با پوشش ۱۰۰٪ تمام فرمت‌های ویدیویی و صوتی تاریخ"""
+    """دانلود با تنظیمات ضد ربات و کلاینت وب پایدار"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
-        # فرمول ضد ارور: پوشش همه پسوندها و کیفیت‌ها بدون قفل شدن
         'format': 'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'outtmpl': output_template,
@@ -65,9 +64,10 @@ def run_download(url, output_template):
         'socket_timeout': 60,
         'retries': 15,
         'fragment_retries': 15,
+        # استفاده از کلاینت وب و موبایل وب برای دور زدن چالش ربات یوتیوب
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web'],
+                'player_client': ['web', 'mweb'],
             }
         },
         'quiet': False,
@@ -77,7 +77,7 @@ def run_download(url, output_template):
     if ffmpeg_path:
         ydl_opts['ffmpeg_location'] = ffmpeg_path
 
-    # خواندن فایل کوکی در صورت وجود
+    # خواندن فایل کوکی اگر موجود باشد
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
@@ -127,7 +127,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     output_filename = f"video_{user_id}.mp4"
     
-    # پاک‌سازی فایل‌های قبلی هم‌نام
     if os.path.exists(output_filename):
         try:
             os.remove(output_filename)
