@@ -51,7 +51,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, user_id):
-    """تابع دانلود با yt-dlp و پشتیبانی کامل از تمام پلتفرم‌ها"""
+    """تابع دانلود با yt-dlp و پشتیبانی کامل از کوکی و تمام پلتفرم‌ها"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
@@ -76,6 +76,7 @@ def run_download(url, user_id):
     if ffmpeg_path and os.path.exists(ffmpeg_path):
         ydl_opts['ffmpeg_location'] = ffmpeg_path
 
+    # استفاده از فایل cookies.txt موجود در پروژه برای جلوگیری از خطای ربات نبودن
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
@@ -101,13 +102,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == CORRECT_PASSWORD:
             authorized_users.add(user_id)
             await update.message.reply_text(
-                f"سلام عمو جواد عزیز! 🤖🔥\n\n"
+                f"سلام! 🤖🔥\n\n"
                 f"لینک ویدیو (یوتیوب، اینستاگرام، آپارات، تیک‌تاک و...) رو بفرست تا با بالاترین کیفیت برات دانلود کنم!\n"
                 f"📌 سقف حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.",
                 reply_markup=restart_keyboard
             )
         else:
-            await update.message.reply_text("رمز عبور را درست وارد نمایید")
+            await update.message.reply_text("رمز عبور اشتباه است. لطفاً رمز عبور را درست وارد نمایید:")
         return
 
     url = text
@@ -161,7 +162,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Error downloading: {e}")
         try:
-            # ارسال ارور به صورت متن ساده بدون علامت‌های دردسرساز Markdown
             await status_msg.edit_text(f"❌ خطا در پردازش یا دانلود:\n{str(e)[:300]}")
         except:
             pass
@@ -178,10 +178,10 @@ def main():
         print("❌ متغیر BOT_TOKEN یافت نشد!")
         return
 
-    # استارت سرور Flask در پس‌زمینه
+    # استارت سرور Flask در پس‌زمینه برای Render
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    # ساخت اپلیکیشن تلگرام با تایم‌اوت‌های استاندارد و امن
+    # ساخت اپلیکیشن تلگرام با تایم‌اوت‌های استاندارد
     application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(360).write_timeout(360).connect_timeout(60).pool_timeout(60).build()
 
     application.add_handler(CommandHandler("start", start_handler))
