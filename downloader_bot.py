@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import logging
 import os
 import threading
@@ -16,7 +17,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# وب‌سرور سبک Flask برای زنده نگه داشتن پورت در Render
+# وب‌سرور سبک Flask برای زنده نگه داشتن سرویس روی Render
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -27,14 +28,13 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host="0.0.0.0", port=port)
 
-# سقف حجم مجاز: ۷۵۰ مگابایت
 MAX_FILE_SIZE_MB = 750
 CORRECT_PASSWORD = "KLi123"
 
-# کاربرانی که رمز رو درست زدند
+# ذخیره شناسه کاربران احراز هویت شده
 authorized_users = set()
 
-# دکمه کیبورد برای ریستارت ربات
+# دکمه ثابت ریستارت
 restart_keyboard = ReplyKeyboardMarkup(
     [["🔄 شروع مجدد / خروج"]],
     resize_keyboard=True
@@ -50,33 +50,32 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardRemove()
     )
 
-def run_download(url, output_template):
-    """دانلود عمومی و قدرتمند برای یوتیوب، اینستاگرام، آپارات، تیک‌تاک و غیره"""
+def run_download(url, user_id):
+    """تابع دانلود با yt-dlp و پشتیبانی کامل از تمام پلتفرم‌ها"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
+        'outtmpl': f'dl_{user_id}.%(ext)s',
         'format': 'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
-        'outtmpl': output_template,
         'max_filesize': MAX_FILE_SIZE_MB * 1024 * 1024,
         'noplaylist': True,
         'socket_timeout': 60,
         'retries': 20,
         'fragment_retries': 20,
-        # تنظیم کلاینت مخصوص یوتیوب برای دور زدن ربات‌چک
         'extractor_args': {
             'youtube': {
                 'player_client': ['ios', 'mweb', 'web'],
             }
         },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'quiet': False,
         'no_warnings': False,
     }
 
-    if ffmpeg_path:
+    if ffmpeg_path and os.path.exists(ffmpeg_path):
         ydl_opts['ffmpeg_location'] = ffmpeg_path
 
-    # خواندن فایل کوکی در صورت وجود
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
@@ -87,7 +86,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # ریستارت یا خروج
+    # مدیریت دکمه خروج یا دستور start
     if text == "/start" or text == "🔄 شروع مجدد / خروج":
         if user_id in authorized_users:
             authorized_users.remove(user_id)
@@ -103,62 +102,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             authorized_users.add(user_id)
             await update.message.reply_text(
                 f"سلام عمو جواد عزیز! 🤖🔥\n\n"
-                f"لینک ویدیو (یوتیوب، اینستاگرام، آپارات، تیک‌تاک و...) رو بفرست تا با بالاترین کیفیت برات دانلود و ارسال کنم!\n"
-                f"📌 حداکثر حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.\n\n"
-                f"💡 برای شروع دوباره، می‌تونی از دکمه ریستارت زیر استفاده کنی:",
+                f"لینک ویدیو (یوتیوب، اینستاگرام، آپارات، تیک‌تاک و...) رو بفرست تا با بالاترین کیفیت برات دانلود کنم!\n"
+                f"📌 سقف حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.",
                 reply_markup=restart_keyboard
             )
         else:
-            await update.message.reply_text(
-                "رمز عبور را درست وارد نمایید"
-            )
+            await update.message.reply_text("رمز عبور را درست وارد نمایید")
         return
 
     url = text
-    if not url.startswith("http"):
-        await update.message.reply_text("❌ لطفاً یک لینک معتبر بفرست!")
+    if not url.startswith("http://") and not url.startswith("https://"):
+        await update.message.reply_text("❌ لطفاً یک لینک اینترنتی معتبر بفرست!")
         return
 
-    status_msg = await update.message.reply_text(
-        "📥 در حال دانلود ویدیو از پلتفرم مربوطه و پردازش نهایی... صبور باش دوست من 🙏"
-    )
-
-    output_filename = f"video_{user_id}.mp4"
-    
-    if os.path.exists(output_filename):
+    # پاکسازی فایل‌های باقی‌مانده احتمالی قبلی
+    for old_file in glob.glob(f"dl_{user_id}.*"):
         try:
-            os.remove(output_filename)
+            os.remove(old_file)
         except:
             pass
 
+    status_msg = await update.message.reply_text(
+        "📥 در حال دانلود و آماده‌سازی ویدیو... لطفاً صبور باش 🙏"
+    )
+
     try:
+        # اجرای دانلود در ترد جداگانه بدون بلاک کردن ربات
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run_download, url, output_filename)
+        await loop.run_in_executor(None, run_download, url, user_id)
 
-        actual_file = output_filename
-        if not os.path.exists(actual_file):
-            for f in os.listdir('.'):
-                if f.startswith(f"video_{user_id}"):
-                    actual_file = f
-                    break
-
-        if not os.path.exists(actual_file):
-            await status_msg.edit_text("❌ خطا: فایل دانلود شده پیدا نشد!")
+        # پیدا کردن فایل خروجی با هر پسوندی که تولید شده (mp4, mkv, webm و غیره)
+        matching_files = [f for f in glob.glob(f"dl_{user_id}.*") if not f.endswith('.part') and not f.endswith('.ytdl')]
+        
+        if not matching_files:
+            await status_msg.edit_text("❌ خطا: فایل دانلود شده پیدا نشد یا لینک پشتیبانی نمی‌شود!")
             return
 
-        file_size_mb = os.path.getsize(actual_file) / (1024 * 1024)
+        downloaded_file = matching_files[0]
+        file_size_mb = os.path.getsize(downloaded_file) / (1024 * 1024)
+
         if file_size_mb > MAX_FILE_SIZE_MB:
             await status_msg.edit_text(f"❌ حجم ویدیو ({file_size_mb:.1f} مگابایت) بیشتر از حد مجاز ({MAX_FILE_SIZE_MB} مگابایت) است!")
-            os.remove(actual_file)
+            os.remove(downloaded_file)
             return
 
-        await status_msg.edit_text("📤 در حال آپلود ویدیو به تلگرام (کمی صبر کنید)...")
+        await status_msg.edit_text(f"📤 در حال ارسال ویدیو به تلگرام ({file_size_mb:.1f}MB)...")
         
-        with open(actual_file, 'rb') as video_file:
+        with open(downloaded_file, 'rb') as video_file:
             await update.message.reply_video(
                 video=video_file,
-                read_timeout=300,
-                write_timeout=300,
+                read_timeout=360,
+                write_timeout=360,
                 connect_timeout=60
             )
 
@@ -167,30 +161,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Error downloading: {e}")
         try:
-            await status_msg.edit_text(f"❌ خطا در دانلود یا آپلود:\n`{str(e)}`", parse_mode="Markdown")
+            # ارسال ارور به صورت متن ساده بدون علامت‌های دردسرساز Markdown
+            await status_msg.edit_text(f"❌ خطا در پردازش یا دانلود:\n{str(e)[:300]}")
         except:
             pass
     finally:
-        for f in os.listdir('.'):
-            if f.startswith(f"video_{user_id}") and os.path.exists(f):
-                try:
-                    os.remove(f)
-                except:
-                    pass
+        # پاکسازی نهایی دیسک
+        for leftover in glob.glob(f"dl_{user_id}.*"):
+            try:
+                os.remove(leftover)
+            except:
+                pass
 
 def main():
     if not BOT_TOKEN:
-        print("❌ توکن یافت نشد!")
+        print("❌ متغیر BOT_TOKEN یافت نشد!")
         return
 
+    # استارت سرور Flask در پس‌زمینه
     threading.Thread(target=run_web_server, daemon=True).start()
 
-    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(300).write_timeout(300).connect_timeout(60).pool_timeout(60).build()
+    # ساخت اپلیکیشن تلگرام با تایم‌اوت‌های استاندارد و امن
+    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(360).write_timeout(360).connect_timeout(60).pool_timeout(60).build()
 
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🤖 ربات با موفقیت روشن شد...")
+    print("🤖 ربات با موفقیت فعال شد...")
     application.run_polling()
 
 if __name__ == '__main__':
