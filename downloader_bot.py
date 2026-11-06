@@ -52,19 +52,24 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, output_template):
-    """دانلود با فرمت همه‌کاره و پشتیبانی کامل از کوکی"""
+    """دانلود با پوشش ۱۰۰٪ تمام فرمت‌های ویدیویی و صوتی تاریخ"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
-        # فرمت استاندارد و منعطف برای دریافت بدون خطای فرمت
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
+        # فرمول ضد ارور: پوشش همه پسوندها و کیفیت‌ها بدون قفل شدن
+        'format': 'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'outtmpl': output_template,
         'max_filesize': MAX_FILE_SIZE_MB * 1024 * 1024,
         'noplaylist': True,
-        'socket_timeout': 120,
-        'retries': 20,
-        'fragment_retries': 20,
+        'socket_timeout': 60,
+        'retries': 15,
+        'fragment_retries': 15,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web'],
+            }
+        },
         'quiet': False,
         'no_warnings': False,
     }
@@ -72,7 +77,7 @@ def run_download(url, output_template):
     if ffmpeg_path:
         ydl_opts['ffmpeg_location'] = ffmpeg_path
 
-    # شناسایی خودکار فایل کوکی
+    # خواندن فایل کوکی در صورت وجود
     if os.path.exists('cookies.txt'):
         ydl_opts['cookiefile'] = 'cookies.txt'
 
@@ -83,7 +88,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    # اگر دکمه ریستارت زده شد یا دستور start
+    # ریستارت یا خروج
     if text == "/start" or text == "🔄 شروع مجدد / خروج":
         if user_id in authorized_users:
             authorized_users.remove(user_id)
@@ -116,12 +121,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     status_msg = await update.message.reply_text(
-        "📥 در حال دانلود ویدیو و ترکیب با FFmpeg... صبور باش دوست من 🙏\n"
-        "بدلیل حجم زیاد ویدیو ممکن است کمی زمان ببرد..."
+        "📥 در حال دانلود ویدیو و پردازش نهایی... صبور باش دوست من 🙏\n"
+        "بدلیل حجم یا کیفیت ممکن است چند لحظه طول بکشد..."
     )
 
     output_filename = f"video_{user_id}.mp4"
     
+    # پاک‌سازی فایل‌های قبلی هم‌نام
     if os.path.exists(output_filename):
         try:
             os.remove(output_filename)
@@ -187,7 +193,7 @@ def main():
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🤖 ربات با موفقیت و دکمه ریستارت روشن شد...")
+    print("🤖 ربات با موفقیت روشن شد...")
     application.run_polling()
 
 if __name__ == '__main__':
