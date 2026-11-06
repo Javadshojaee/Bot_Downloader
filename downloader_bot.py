@@ -51,7 +51,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def run_download(url, user_id):
-    """تابع دانلود با yt-dlp و پشتیبانی کامل از کوکی و تمام پلتفرم‌ها"""
+    """تابع دانلود با yt-dlp و استفاده مستقیم از کوکی مرورگر برای دور زدن خطای ربات نبودن"""
     ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
 
     ydl_opts = {
@@ -71,14 +71,12 @@ def run_download(url, user_id):
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'quiet': False,
         'no_warnings': False,
+        # خواندن مستقیم کوکی از مرورگر کروم برای جلوگیری از خطای Sign in to confirm
+        'cookiesfrombrowser': ('chrome',),
     }
 
     if ffmpeg_path and os.path.exists(ffmpeg_path):
         ydl_opts['ffmpeg_location'] = ffmpeg_path
-
-    # استفاده از فایل cookies.txt موجود در پروژه برای جلوگیری از خطای ربات نبودن
-    if os.path.exists('cookies.txt'):
-        ydl_opts['cookiefile'] = 'cookies.txt'
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
