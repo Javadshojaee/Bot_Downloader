@@ -25,7 +25,8 @@ load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 PASSWORD = os.getenv("BOT_PASSWORD", "KLi4874")
 
-MAX_FILE_SIZE = 50 * 1024 * 1024
+# تنظیم دقیق حداکثر حجم روی ۶۰۰ مگابایت
+MAX_FILE_SIZE = 600 * 1024 * 1024
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -40,7 +41,7 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# سرور کوچک برای Render
+# سرور کوچک برای زنده نگه داشتن Render
 server = Flask(__name__)
 
 
@@ -83,7 +84,7 @@ def valid_link(url):
         return False
 
 
-# دانلود ویدیو
+# دانلود ویدیو (به همراه ترفند ضد بات یوتیوب و اینستاگرام)
 def download_video(url, user_id):
     user_folder = os.path.join(DOWNLOAD_DIR, str(user_id))
     os.makedirs(user_folder, exist_ok=True)
@@ -94,7 +95,9 @@ def download_video(url, user_id):
             os.remove(file)
 
     options = {
-        "format": "best[ext=mp4][filesize<=52428800]/best[filesize<=52428800]",
+        # انتخاب بهترین فرمت تجمیع‌شده که حجمش زیر ۶۰۰ مگابایت باشه
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
         "outtmpl": os.path.join(
             user_folder,
             "%(title).80s-%(id)s.%(ext)s"
@@ -103,9 +106,23 @@ def download_video(url, user_id):
         "quiet": True,
         "no_warnings": True,
         "max_filesize": MAX_FILE_SIZE,
-        "socket_timeout": 30,
-        "retries": 2,
+        "socket_timeout": 60,
+        "retries": 5,
+        # شبیه‌سازی اپلیکیشن اندروید برای دور زدن محدودیت یوتیوب
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
     }
+
+    # اگر فایل کوکی در ریپازیتوری وجود داشت از آن استفاده کند
+    if os.path.exists("cookies.txt"):
+        options["cookiefile"] = "cookies.txt"
 
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([url])
@@ -115,11 +132,17 @@ def download_video(url, user_id):
     if not files:
         raise Exception("فایل دانلود نشد.")
 
-    file_path = max(files, key=os.path.getmtime)
+    # نادیده گرفتن فایل‌های نیمه‌کاره
+    valid_files = [f for f in files if not f.endswith(('.part', '.ytdl'))]
+    if not valid_files:
+        raise Exception("فایل نهایی دانلود نشد.")
 
-    if os.path.getsize(file_path) > MAX_FILE_SIZE:
+    file_path = max(valid_files, key=os.path.getmtime)
+
+    file_size = os.path.getsize(file_path)
+    if file_size > MAX_FILE_SIZE:
         os.remove(file_path)
-        raise Exception("حجم فایل بیشتر از ۵۰ مگابایت است.")
+        raise Exception(f"حجم فایل ({file_size / (1024 * 1024):.1f}MB) بیشتر از حد مجاز ۶۰۰ مگابایت است.")
 
     return file_path
 
@@ -195,18 +218,26 @@ async def handle_message(
             update.effective_user.id
         )
 
-        await status.edit_text("📤 دانلود انجام شد؛ در حال ارسال...")
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        await status.edit_text(f"📤 دانلود انجام شد ({size_mb:.1f}MB)؛ در حال ارسال به تلگرام...")
 
+        # ارسال با افزایش زمان انتظار (read/write timeout) برای فایل‌های سنگین
         with open(file_path, "rb") as video:
             if file_path.lower().endswith(".mp4"):
                 await message.reply_video(
                     video=video,
-                    caption="✅ دانلود با موفقیت انجام شد."
+                    caption="✅ دانلود با موفقیت انجام شد.",
+                    read_timeout=600,
+                    write_timeout=600,
+                    connect_timeout=60
                 )
             else:
                 await message.reply_document(
                     document=video,
-                    caption="✅ فایل آماده است."
+                    caption="✅ فایل آماده است.",
+                    read_timeout=600,
+                    write_timeout=600,
+                    connect_timeout=60
                 )
 
         await status.delete()
@@ -215,9 +246,7 @@ async def handle_message(
         logging.exception("Download error")
 
         await status.edit_text(
-            "❌ دانلود انجام نشد.\n\n"
-            "ممکن است لینک در دسترس نباشد، سایت از دانلود پشتیبانی نکند "
-            "یا حجم فایل بیشتر از حد مجاز باشد."
+            f"❌ دانلود انجام نشد:\n{str(error)[:200]}"
         )
 
     finally:
@@ -237,7 +266,15 @@ def main():
         daemon=True
     ).start()
 
-    application = ApplicationBuilder().token(TOKEN).build()
+    # افزایش تایم‌اوت پایه ربات برای فایل‌های حجیم
+    application = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .read_timeout(600)
+        .write_timeout(600)
+        .connect_timeout(60)
+        .build()
+    )
 
     application.add_handler(CommandHandler("start", start))
 
@@ -255,3 +292,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
