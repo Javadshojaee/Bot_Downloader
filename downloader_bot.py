@@ -197,9 +197,15 @@ def main():
         print("❌ توکن ربات پیدا نشد! لطفاً فایل .env را بررسی کنید.")
         return
 
+    # اضافه کردن تنظیمات پراکسی برای رد شدن از فیلترینگ در لوکال
+    # (اگر از V2Ray یا ساب‌سکرایبشن استفاده می‌کنی، معمولاً روی پورت 2080 یا 10809 لوکال پورت داره)
+    PROXY_URL = "http://127.0.0.1:2080" # یا پراکسی تلگرام خودت (مثل پورت سس یا http)
+
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+        .proxy_url(PROXY_URL)  # <--- اضافه شدن پراکسی برای رفع ارور اتصال
+        .get_updates_proxy_url(PROXY_URL) # <--- برای دریافت آپدیت‌ها
         .connect_timeout(30.0)
         .read_timeout(60.0)
         .write_timeout(60.0)
@@ -211,6 +217,3 @@ def main():
 
     print("🤖 Application started successfully! Bot is running without errors...")
     app.run_polling()
-
-if __name__ == '__main__':
-    main()

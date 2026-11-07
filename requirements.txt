@@ -1,6 +1,11 @@
-   pyTelegramBotAPI
-   yt-dlp
-   flask
-   python-dotenv
-   requests
-   urllib3
+pyTelegramBotAPI
+yt-dlp
+flask
+python-dotenv
+requests
+urllib3
+
+python-telegram-bot
+yt-dlp
+python-dotenv
+flask
