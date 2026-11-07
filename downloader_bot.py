@@ -3,17 +3,23 @@ import telebot
 from dotenv import load_dotenv
 import yt_dlp
 import threading
+from flask import Flask
 
-# بارگذاری متغیرهای محیطی از فایل .env
+# بارگذاری متغیرهای محیطی
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
 bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
-# دایرکتوری برای ذخیره موقت ویدیوها
 DOWNLOAD_DIR = "downloads"
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
+
+# روت وب‌سایت برای جلوگیری از خاموش شدن ربات روی هاست (Render)
+@app.route('/')
+def home():
+    return "Bot is active and running smoothly! 🚀"
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -23,7 +29,7 @@ def send_welcome(message):
 def download_video(message):
     url = message.text.strip()
     
-    # تبدیل خودکار reels به reel برای اینستاگرام
+    # اصلاح خودکار لینک‌های اینستاگرام
     if "instagram.com/reels/" in url:
         url = url.replace("instagram.com/reels/", "instagram.com/reel/")
 
@@ -41,10 +47,10 @@ def download_video(message):
                 info = ydl.extract_info(url, download=True)
                 file_path = ydl.prepare_filename(info)
 
-            # بررسی حجم فایل برای ارسال در تلگرام (زیر 50 مگابایت)
+            # بررسی حجم فایل برای ارسال در تلگرام
             file_size = os.path.getsize(file_path) / (1024 * 1024)
             if file_size > 50:
-                bot.edit_message_text("❌ حجم ویدیو بیشتر از 50 مگابایت است و تلگرام اجازه ارسال آن را نمی‌دهد.", message.chat.id, msg.message_id)
+                bot.edit_message_text("❌ حجم ویدیو بیشتر از 50 مگابایت است.", message.chat.id, msg.message_id)
                 os.remove(file_path)
                 return
 
@@ -55,7 +61,6 @@ def download_video(message):
             
             bot.delete_message(message.chat.id, msg.message_id)
             
-            # پاک کردن فایل از روی هاست/سیستم بعد از ارسال
             if os.path.exists(file_path):
                 os.remove(file_path)
 
@@ -63,9 +68,17 @@ def download_video(message):
             print(f"Error: {e}")
             bot.edit_message_text(f"❌ عمو جواد یه خطایی پیش اومد:\n{str(e)}", message.chat.id, msg.message_id)
 
-    # اجرای عملیات دانلود در یک ترد جداگانه برای جلوگیری از فریز شدن ربات
-    threading.Thread(target=process_download).run()
+    threading.Thread(target=process_download).start()
+
+# اجرای هم‌زمان ربات تلگرام و سرور Flask
+def run_bot():
+    bot.infinity_polling()
 
 if __name__ == "__main__":
-    print("Bot is running...")
-    bot.infinity_polling()
+    # اجرای ربات در یک ترد جداگانه
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.start()
+    
+    # اجرای وب‌سایت Flask روی پورت پورتمون (مناسب برای Render)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
