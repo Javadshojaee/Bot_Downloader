@@ -1,12 +1,18 @@
+
 import os
 import asyncio
 import logging
+import threading
+
+from flask import Flask
 from dotenv import load_dotenv
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+
 import yt_dlp
 
-# بارگذاری توکن از فایل .env
+# بارگذاری توکن
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -16,22 +22,34 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# سقف حجم ویدیو (۶۵۰ مگابایت)
+# سقف حجم ویدیو
 MAX_FILE_SIZE_MB = 650
 
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name
-    welcome_text = (
-        f"سلام {user_name} عزیز! 🚀\n\n"
-        "لینک ویدیوی مورد نظرت رو بفرست تا مستقیم و بدون معطلی برات دانلودش کنم و بفرستم!\n\n"
-        f"📌 نکته: حداکثر حجم پشتیبانی شده تا {MAX_FILE_SIZE_MB} مگابایت تنظیم شده است."
+# =========================
+# FLASK SERVER FOR RENDER
+# =========================
+
+server = Flask(__name__)
+
+@server.route("/")
+def home():
+    return "Downloader Bot is Running!"
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    server.run(
+        host="0.0.0.0",
+        port=port,
+        use_reloader=False
     )
-    await update.message.reply_text(welcome_text)
+
+# =========================
+# DOWNLOAD VIDEO
+# =========================
 
 def download_video_sync(target_url):
-    # یک نام فایل رندوم یا ثابت تمیز برای دانلود
     output_template = "downloaded_video.%(ext)s"
-    
+
     ydl_opts = {
         'format': 'best/bestvideo+bestaudio',
         'outtmpl': output_template,
@@ -43,8 +61,7 @@ def download_video_sync(target_url):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         }
     }
-    
-    # پاک کردن فایل‌های موقت قبلی اگر مونده باشن
+
     for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi', 'part']:
         old_file = f"downloaded_video.{ext}"
         if os.path.exists(old_file):
@@ -54,40 +71,69 @@ def download_video_sync(target_url):
                 pass
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        # مستقیماً دانلود را انجام میدهیم و از try_getting info صرف نظر می‌کنیم
         ydl.download([target_url])
-        
-    # پیدا کردن فایل دانلود شده با هر پسوندی
+
     filename = None
+
     for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi']:
         test_name = f"downloaded_video.{ext}"
         if os.path.exists(test_name):
             filename = test_name
             break
-    
+
     if not filename:
-        files = [f for f in os.listdir('.') if f.startswith('downloaded_video') and not f.endswith('.part')]
+        files = [
+            f for f in os.listdir('.')
+            if f.startswith('downloaded_video')
+            and not f.endswith('.part')
+        ]
         if files:
-            filename = files.get() if hasattr(files, 'get') else files[0]
+            filename = files[0]
 
     if not filename or not os.path.exists(filename):
         raise ValueError("دانلود انجام شد اما فایل نهایی ویدیو پیدا نشد!")
 
     filesize_bytes = os.path.getsize(filename)
     filesize_mb = filesize_bytes / (1024 * 1024)
-    
+
     if filesize_mb > MAX_FILE_SIZE_MB:
         if os.path.exists(filename):
             os.remove(filename)
-        raise ValueError(f"حجم ویدیو ({filesize_mb:.1f} مگابایت) بیشتر از سقف مجاز {MAX_FILE_SIZE_MB} مگابایت است!")
-        
+
+        raise ValueError(
+            f"حجم ویدیو ({filesize_mb:.1f} مگابایت) بیشتر از سقف مجاز {MAX_FILE_SIZE_MB} مگابایت است!"
+        )
+
     return filename, filesize_mb
+
+
+# =========================
+# START HANDLER
+# =========================
+
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.first_name
+
+    welcome_text = (
+        f"سلام {user_name} عزیز! 🚀\n\n"
+        "لینک ویدیوی مورد نظرت رو بفرست تا مستقیم و بدون معطلی برات دانلودش کنم و بفرستم!\n\n"
+        f"📌 نکته: حداکثر حجم پشتیبانی شده تا {MAX_FILE_SIZE_MB} مگابایت تنظیم شده است."
+    )
+
+    await update.message.reply_text(welcome_text)
+
+
+# =========================
+# HANDLE MESSAGE
+# =========================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
-    
+
     if not (url.startswith("http://") or url.startswith("https://")):
-        await update.message.reply_text("❌ لطفاً یک لینک معتبر (شروع شونده با http یا https) بفرستید.")
+        await update.message.reply_text(
+            "❌ لطفاً یک لینک معتبر (شروع شونده با http یا https) بفرستید."
+        )
         return
 
     status_msg = await update.message.reply_text(
@@ -96,13 +142,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     filename = None
-    try:
-        filename, filesize_mb = await asyncio.to_thread(download_video_sync, url)
 
-        await status_msg.edit_text("📤 دانلود انجام شد! در حال ارسال ویدیو به تلگرام...")
+    try:
+        filename, filesize_mb = await asyncio.to_thread(
+            download_video_sync, url
+        )
+
+        await status_msg.edit_text(
+            "📤 دانلود انجام شد! در حال ارسال ویدیو به تلگرام..."
+        )
 
         caption_text = (
-            f"📦 **حجم ویدیو:** {filesize_mb:.1f} مگابایت\n\n"
+            f"📦 *حجم ویدیو:* {filesize_mb:.1f} مگابایت\n\n"
             f"✅ با موفقیت دانلود و ارسال شد!"
         )
 
@@ -112,26 +163,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=caption_text,
                 parse_mode="Markdown"
             )
-            
+
         await status_msg.delete()
 
     except Exception as e:
         error_str = str(e)
         logging.error(f"Error downloading: {error_str}")
-        await status_msg.edit_text(f"❌ خطایی رخ داد:\n{error_str[:180]}")
+
+        await status_msg.edit_text(
+            f"❌ خطایی رخ داد:\n{error_str[:180]}"
+        )
 
     finally:
-        # پاکسازی فایل موقت
         if filename and os.path.exists(filename):
             try:
                 os.remove(filename)
             except:
                 pass
 
+
+# =========================
+# MAIN
+# =========================
+
 def main():
     if not BOT_TOKEN:
         print("❌ توکن ربات پیدا نشد! لطفاً فایل .env را بررسی کنید.")
         return
+
+    # اجرای Flask در Thread جداگانه
+    threading.Thread(
+        target=run_server,
+        daemon=True
+    ).start()
 
     app = (
         ApplicationBuilder()
@@ -142,11 +206,24 @@ def main():
         .build()
     )
 
-    app.add_handler(MessageHandler(filters.TEXT & filters.COMMAND & filters.Regex("^/start$"), start_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.COMMAND & filters.Regex("^/start$"),
+            start_handler
+        )
+    )
 
-    print("🤖 Application started successfully! Bot is running without errors...")
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message
+        )
+    )
+
+    print("🤖 Application started successfully! Bot is running...")
+
     app.run_polling()
+
 
 if __name__ == '__main__':
     main()
