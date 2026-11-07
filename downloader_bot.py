@@ -1,87 +1,76 @@
 import os
 import telebot
-from yt_dlp import YoutubeDL
-from flask import Flask
+import yt_dlp
 import threading
+from flask import Flask
+from telebot import types
 
-TOKEN = os.environ.get('BOT_TOKEN')
-bot = telebot.TeleBot(TOKEN)
-
-app = Flask('')
+# ۱. راه‌اندازی Flask (برای اینکه هاستِ Render فکر کنه رباتت یه سایت فعاله)
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is alive and running!"
+    return "Bot is running perfectly!"
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "سلام عمو جواد! 👋 لینک ویدیو رو بفرست تا برات دانلود کنم.")
+# ۲. راه‌اندازی ربات تلگرام
+TOKEN = os.environ.get('BOT_TOKEN') # حتماً توکن رو توی .env بذار
+bot = telebot.TeleBot(TOKEN)
 
-@bot.message_handler(func=lambda message: True)
-def download_video(message):
-    url = message.text.strip()
-    if not url.startswith("http"):
-        bot.reply_to(message, "لطفاً یک لینک معتبر بفرست عمو جواد!")
-        return
-
-    msg = bot.reply_to(message, "⏳ در حال بررسی و دانلود ویدیو، صبور باش...")
-    
-    # استفاده از شناسه چت و پیام برای جلوگیری از تداخل دانلودهای همزمان
-    output_template = f"video_{message.chat.id}_{message.message_id}.%(ext)s"
-
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best',
-        'outtmpl': output_template,
-        'max_filesize': 50 * 1024 * 1024,  # حداکثر ۵۰ مگابایت برای ارسال عادی تلگرام
-        'quiet': True,
-        'no_warnings': True,
-        # شبیه‌سازی مرورگر واقعی برای رد کردن بلاک اینستاگرام
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
-    }
-
-    # اگر فایل cookies.txt داری (برای ورود به اینستاگرام)، فعالش می‌کنه:
-    if os.path.exists("cookies.txt"):
-        ydl_opts['cookiefile'] = "cookies.txt"
-
-    downloaded_file = None
+# ۳. منطقِ هوشمند برای تشخیص حجم ویدیو
+def process_video_logic(message):
+    url = message.text
+    chat_id = message.chat.id
+    bot.reply_to(message, "عمو جواد داره بررسی می‌کنه... ⏳")
 
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            downloaded_file = ydl.prepare_filename(info)
+        # تنظیمات yt-dlp برای گرفتن اطلاعات ویدیو بدون دانلود کردنش
+        ydl_opts = {'format': 'best'}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            file_size = info.get('filesize') or info.get('filesize_approx', 0)
+            video_url = info.get('url')
 
-        if downloaded_file and os.path.exists(downloaded_file):
-            with open(downloaded_file, 'rb') as video:
-                bot.send_video(message.chat.id, video, caption="بفرمایید عمو جواد! اینم ویدیوت 🎬✨")
-            bot.delete_message(message.chat.id, msg.message_id)
-            os.remove(downloaded_file)
+        # اگه حجم فایل بیشتر از ۵۰ مگابایت بود (۵۰ * ۱۰۲۴ * ۱۰۲۴ بایت)
+        if file_size > 50 * 1024 * 1024:
+            markup = types.InlineKeyboardMarkup()
+            btn = types.InlineKeyboardButton("📥 دانلود فایل سنگین (لینک مستقیم)", url=video_url)
+            markup.add(btn)
+            bot.send_message(chat_id, "ویدیو خیلی سنگینه (بالای ۵۰ مگ). از لینک زیر با سرعت بالا دانلودش کن:", reply_markup=markup)
+        
         else:
-            bot.edit_message_text("❌ فایلی برای ارسال پیدا نشد!", message.chat.id, msg.message_id)
+            # اگه حجم فایل مناسب بود، دانلود و ارسال کن
+            bot.send_message(chat_id, "حجم ویدیو مناسبه! دارم دانلودش می‌کنم... 🔄")
+            with yt_dlp.YoutubeDL({'outtmpl': 'video.mp4', 'format': 'best'}) as ydl:
+                ydl.download([url])
+            
+            with open('video.mp4', 'rb') as video:
+                bot.send_video(chat_id, video)
+            
+            # پاک کردن فایل بعد از ارسال برای خالی شدن حافظه
+            if os.path.exists('video.mp4'):
+                os.remove('video.mp4')
 
     except Exception as e:
-        error_msg = str(e)
-        print(f"Error details: {error_msg}")
-        
-        # اگر خطا مربوط به لاگین اینستاگرام بود:
-        if "login" in error_msg.lower() or "checkpoint" in error_msg.lower():
-            bot.edit_message_text("❌ اینستاگرام برای این پست نیاز به لاگین (کوکی) دارد یا صفحه خصوصی (Private) است!", message.chat.id, msg.message_id)
-        else:
-            # نمایش خلاصه‌ای از خطای واقعی در کنسول و تلگرام
-            bot.edit_message_text(f"❌ خطا در دانلود:\n{error_msg[:120]}", message.chat.id, msg.message_id)
-            
-        if downloaded_file and os.path.exists(downloaded_file):
-            os.remove(downloaded_file)
+        bot.reply_to(message, f"عمو جواد یه خطایی پیش اومد: {str(e)}")
 
+# دستور شروع
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "سلام عمو جواد! لینک ویدیوت رو بفرست تا برات جادویی دانلودش کنم! ✨")
+
+# دریافت لینک ویدیو
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    process_video_logic(message)
+
+# ۴. اجرای همزمان Flask و ربات
 def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
 if __name__ == "__main__":
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    # اجرای وب‌سرور در یک ترد جداگانه
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
     
-    print("Bot is polling...")
-    bot.infinity_polling()
+    # اجرای ربات
+    bot.polling(none_stop=True)
