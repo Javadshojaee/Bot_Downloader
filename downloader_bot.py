@@ -37,17 +37,21 @@ def download_video(message):
 
     def process_download():
         try:
+            # تنظیمات پیشرفته yt-dlp برای جلوگیری از خطای Too Many Requests و بن شدن IP
             ydl_opts = {
                 'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
                 'format': 'best',
                 'noplaylist': True,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'referer': 'https://www.instagram.com/',
+                'socket_timeout': 30,
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 file_path = ydl.prepare_filename(info)
 
-            # بررسی حجم فایل برای ارسال در تلگرام
+            # بررسی حجم فایل برای ارسال در تلگرام (زیر 50 مگابایت)
             file_size = os.path.getsize(file_path) / (1024 * 1024)
             if file_size > 50:
                 bot.edit_message_text("❌ حجم ویدیو بیشتر از 50 مگابایت است.", message.chat.id, msg.message_id)
@@ -79,6 +83,6 @@ if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
     
-    # اجرای وب‌سایت Flask روی پورت پورتمون (مناسب برای Render)
+    # اجرای وب‌سایت Flask روی پورت مربوطه (مناسب برای Render)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
