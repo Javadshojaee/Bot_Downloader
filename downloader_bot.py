@@ -1,76 +1,71 @@
 import os
 import telebot
+from dotenv import load_dotenv
 import yt_dlp
 import threading
-from flask import Flask
-from telebot import types
 
-# ۱. راه‌اندازی Flask (برای اینکه هاستِ Render فکر کنه رباتت یه سایت فعاله)
-app = Flask(__name__)
+# بارگذاری متغیرهای محیطی از فایل .env
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
 
-@app.route('/')
-def home():
-    return "Bot is running perfectly!"
-
-# ۲. راه‌اندازی ربات تلگرام
-TOKEN = os.environ.get('BOT_TOKEN') # حتماً توکن رو توی .env بذار
 bot = telebot.TeleBot(TOKEN)
 
-# ۳. منطقِ هوشمند برای تشخیص حجم ویدیو
-def process_video_logic(message):
-    url = message.text
-    chat_id = message.chat.id
-    bot.reply_to(message, "عمو جواد داره بررسی می‌کنه... ⏳")
+# دایرکتوری برای ذخیره موقت ویدیوها
+DOWNLOAD_DIR = "downloads"
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
 
-    try:
-        # تنظیمات yt-dlp برای گرفتن اطلاعات ویدیو بدون دانلود کردنش
-        ydl_opts = {'format': 'best'}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            file_size = info.get('filesize') or info.get('filesize_approx', 0)
-            video_url = info.get('url')
-
-        # اگه حجم فایل بیشتر از ۵۰ مگابایت بود (۵۰ * ۱۰۲۴ * ۱۰۲۴ بایت)
-        if file_size > 50 * 1024 * 1024:
-            markup = types.InlineKeyboardMarkup()
-            btn = types.InlineKeyboardButton("📥 دانلود فایل سنگین (لینک مستقیم)", url=video_url)
-            markup.add(btn)
-            bot.send_message(chat_id, "ویدیو خیلی سنگینه (بالای ۵۰ مگ). از لینک زیر با سرعت بالا دانلودش کن:", reply_markup=markup)
-        
-        else:
-            # اگه حجم فایل مناسب بود، دانلود و ارسال کن
-            bot.send_message(chat_id, "حجم ویدیو مناسبه! دارم دانلودش می‌کنم... 🔄")
-            with yt_dlp.YoutubeDL({'outtmpl': 'video.mp4', 'format': 'best'}) as ydl:
-                ydl.download([url])
-            
-            with open('video.mp4', 'rb') as video:
-                bot.send_video(chat_id, video)
-            
-            # پاک کردن فایل بعد از ارسال برای خالی شدن حافظه
-            if os.path.exists('video.mp4'):
-                os.remove('video.mp4')
-
-    except Exception as e:
-        bot.reply_to(message, f"عمو جواد یه خطایی پیش اومد: {str(e)}")
-
-# دستور شروع
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(message, "سلام عمو جواد! لینک ویدیوت رو بفرست تا برات جادویی دانلودش کنم! ✨")
 
-# دریافت لینک ویدیو
 @bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    process_video_logic(message)
+def download_video(message):
+    url = message.text.strip()
+    
+    # تبدیل خودکار reels به reel برای اینستاگرام
+    if "instagram.com/reels/" in url:
+        url = url.replace("instagram.com/reels/", "instagram.com/reel/")
 
-# ۴. اجرای همزمان Flask و ربات
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    msg = bot.reply_to(message, "⏳ عمو جواد داره بررسی می‌کنه...")
+
+    def process_download():
+        try:
+            ydl_opts = {
+                'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
+                'format': 'best',
+                'noplaylist': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                file_path = ydl.prepare_filename(info)
+
+            # بررسی حجم فایل برای ارسال در تلگرام (زیر 50 مگابایت)
+            file_size = os.path.getsize(file_path) / (1024 * 1024)
+            if file_size > 50:
+                bot.edit_message_text("❌ حجم ویدیو بیشتر از 50 مگابایت است و تلگرام اجازه ارسال آن را نمی‌دهد.", message.chat.id, msg.message_id)
+                os.remove(file_path)
+                return
+
+            bot.edit_message_text("📤 در حال ارسال ویدیو...", message.chat.id, msg.message_id)
+            
+            with open(file_path, 'rb') as video:
+                bot.send_video(message.chat.id, video)
+            
+            bot.delete_message(message.chat.id, msg.message_id)
+            
+            # پاک کردن فایل از روی هاست/سیستم بعد از ارسال
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+        except Exception as e:
+            print(f"Error: {e}")
+            bot.edit_message_text(f"❌ عمو جواد یه خطایی پیش اومد:\n{str(e)}", message.chat.id, msg.message_id)
+
+    # اجرای عملیات دانلود در یک ترد جداگانه برای جلوگیری از فریز شدن ربات
+    threading.Thread(target=process_download).run()
 
 if __name__ == "__main__":
-    # اجرای وب‌سرور در یک ترد جداگانه
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
-    
-    # اجرای ربات
-    bot.polling(none_stop=True)
+    print("Bot is running...")
+    bot.infinity_polling()
