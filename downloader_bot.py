@@ -1,7 +1,7 @@
 import asyncio
+import glob
 import logging
 import os
-import glob
 import threading
 from dotenv import load_dotenv
 from flask import Flask
@@ -9,16 +9,22 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 import yt_dlp
 
+# بارگذاری توکن
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# تنظیمات لاگینگ
-logging.basicConfig(level=logging.INFO)
+# تنظیمات لاگ
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-# وب‌سرور برای زنده نگه داشتن روی Render
+# وب‌سرور سبک برای زنده ماندن روی Render
 web_app = Flask(__name__)
+
 @web_app.route('/')
-def home(): return "Bot is running!"
+def home():
+    return "Bot is running happily!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -28,48 +34,61 @@ MAX_FILE_SIZE_MB = 750
 CORRECT_PASSWORD = "KLi123"
 authorized_users = set()
 
-# دکمه ریستارت
-restart_keyboard = ReplyKeyboardMarkup([["🔄 شروع مجدد"]], resize_keyboard=True)
+restart_keyboard = ReplyKeyboardMarkup(
+    [["🔄 شروع مجدد / خروج"]],
+    resize_keyboard=True
+)
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id in authorized_users: authorized_users.remove(user_id)
-    await update.message.reply_text("سلام عمو جواد! 🤖\nلطفاً رمز عبور را وارد کنید:", reply_markup=ReplyKeyboardRemove())
+    authorized_users.discard(user_id)
+    await update.message.reply_text(
+        "سلام عمو جواد! 🤖✨\nلطفاً رمز عبور را وارد کنید:",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
-def download_sync(url, user_id, status_msg, loop):
-    # اسم فایل اختصاصی برای هر کاربر
+def download_video(url: str, user_id: int):
+    """دانلود هوشمند با استفاده مستقیم از فایل cookies.txt موجود در پروژه"""
     output_tmpl = f"dl_{user_id}.%(ext)s"
     
-    def progress_hook(data):
-        if data['status'] == 'downloading':
-            p = data.get('_percent_str', '0%')
-            # فقط درصد‌های رند رو خبر بده که تلگرام بلاک نکنه
-            if "0.0%" in p or "25." in p or "50." in p or "75." in p or "100." in p:
-                asyncio.run_coroutine_threadsafe(
-                    status_msg.edit_text(f"⏳ در حال دانلود: {p}"), loop
-                )
+    # پیدا کردن فایل کوکی در پوشه پروژه
+    cookie_file = "cookies.txt"
+    has_cookie = os.path.exists(cookie_file)
 
     ydl_opts = {
-        'format': 'bestvideo*+bestaudio/best',
         'outtmpl': output_tmpl,
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'noplaylist': True,
-        'progress_hooks': [progress_hook],
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        'socket_timeout': 60,
+        'retries': 15,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'web'],
+            }
+        },
+        'quiet': True,
+        'no_warnings': True,
+        # هدرهای واقعی برای جلوگیری از خطای ۴۲۹ اینستاگرام
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
     }
+
+    # اگر فایل کوکی وجود داشت، به تنظیمات اضافه اش کن
+    if has_cookie:
+        ydl_opts['cookiefile'] = cookie_file
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
-    
-    # پیدا کردن فایل دانلود شده
-    files = glob.glob(f"dl_{user_id}.*")
-    return files[0] if files else None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    if text == "/start" or text == "🔄 شروع مجدد":
+    if text in ["/start", "🔄 شروع مجدد / خروج"]:
         authorized_users.discard(user_id)
         await start_handler(update, context)
         return
@@ -77,32 +96,89 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in authorized_users:
         if text == CORRECT_PASSWORD:
             authorized_users.add(user_id)
-            await update.message.reply_text("✅ تایید شد! حالا لینک ویدیو رو بفرست:", reply_markup=restart_keyboard)
+            await update.message.reply_text(
+                "✅ خوش اومدی عمو جواد!\n"
+                "لینک ویدیو (یوتیوب یا اینستاگرام) رو بفرست تا بدون خطا دانلود کنم 🚀",
+                reply_markup=restart_keyboard
+            )
         else:
-            await update.message.reply_text("❌ رمز اشتباهه!")
+            await update.message.reply_text("❌ رمز اشتباهه! دوباره وارد کن:")
         return
 
-    # شروع دانلود
-    status_msg = await update.message.reply_text("📥 شروع پردازش...")
+    if not (text.startswith("http://") or text.startswith("https://")):
+        await update.message.reply_text("⚠️ لطفاً یک لینک معتبر اینترنتی بفرست عمو جان!")
+        return
+
+    for old_file in glob.glob(f"dl_{user_id}.*"):
+        try:
+            os.remove(old_file)
+        except Exception:
+            pass
+
+    status_msg = await update.message.reply_text("📥 در حال دریافت ویدیو... چند لحظه صبر کن ⏳")
+
     try:
         loop = asyncio.get_running_loop()
-        file_path = await loop.run_in_executor(None, download_sync, text, user_id, status_msg, loop)
-        
-        if file_path:
-            await status_msg.edit_text("📤 در حال ارسال به تلگرام...")
-            with open(file_path, 'rb') as f:
-                await update.message.reply_video(video=f, caption="خدمت شما! 🔥")
-            os.remove(file_path)
-            await status_msg.delete()
+        await loop.run_in_executor(None, download_video, text, user_id)
+
+        matching_files = [f for f in glob.glob(f"dl_{user_id}.*") if not f.endswith(('.part', '.ytdl'))]
+        if not matching_files:
+            await status_msg.edit_text("❌ خطایی رخ داد: فایل دانلود شده پیدا نشد!")
+            return
+
+        downloaded_file = matching_files[0]
+        size_mb = os.path.getsize(downloaded_file) / (1024 * 1024)
+
+        if size_mb > MAX_FILE_SIZE_MB:
+            await status_msg.edit_text(f"❌ حجم ویدیو ({size_mb:.1f}MB) از سقف مجاز ({MAX_FILE_SIZE_MB}MB) بیشتر است!")
+            os.remove(downloaded_file)
+            return
+
+        await status_msg.edit_text(f"📤 در حال آپلود ویدیو در تلگرام ({size_mb:.1f} مگابایت)...")
+        with open(downloaded_file, 'rb') as video_data:
+            await update.message.reply_video(
+                video=video_data,
+                caption="خدمت شما عمو جواد عزیز! 🎬🔥",
+                read_timeout=360,
+                write_timeout=360,
+                connect_timeout=60
+            )
+
+        await status_msg.delete()
+
     except Exception as e:
-        await status_msg.edit_text(f"❌ خطا: {str(e)[:100]}")
+        logging.error(f"Download Error: {e}")
+        await status_msg.edit_text(f"❌ خطا در پردازش یا دانلود:\n{str(e)[:250]}")
+
+    finally:
+        for f in glob.glob(f"dl_{user_id}.*"):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
 def main():
+    if not BOT_TOKEN:
+        print("❌ توکن BOT_TOKEN یافت نشد!")
+        return
+
     threading.Thread(target=run_web_server, daemon=True).start()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.run_polling()
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(True)
+        .read_timeout(360)
+        .write_timeout(360)
+        .build()
+    )
+
+    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
+    print("🤖 ربات روشن شد و آماده کار است...")
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
+
