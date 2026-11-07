@@ -1,13 +1,11 @@
 import asyncio
-import glob
 import logging
 import os
-import threading
 from dotenv import load_dotenv
-from flask import Flask
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 import yt_dlp
+from httpx import Timeout
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -17,171 +15,105 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# وب‌سرور سبک Flask برای زنده نگه داشتن سرویس روی Render
-web_app = Flask(__name__)
-
-@web_app.route('/')
-def home():
-    return "Bot is alive and running!"
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host="0.0.0.0", port=port)
-
+# افزایش سقف حجم مجاز به 750 مگابایت
 MAX_FILE_SIZE_MB = 750
-CORRECT_PASSWORD = "KLi123"
-
-# ذخیره شناسه کاربران احراز هویت شده
-authorized_users = set()
-
-# دکمه ثابت ریستارت
-restart_keyboard = ReplyKeyboardMarkup(
-    [["🔄 شروع مجدد / خروج"]],
-    resize_keyboard=True
-)
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in authorized_users:
-        authorized_users.remove(user_id)
-        
+    user_name = update.effective_user.first_name or "عمو جواد"
     await update.message.reply_text(
-        "سلام! 🤖\n\nلطفاً رمز عبور را وارد نمایید:",
-        reply_markup=ReplyKeyboardRemove()
+        f"سلام {user_name} گل! 🤖🔥\n\n"
+        f"لینک ویدیو رو بفرست تا با بالاترین کیفیت برات دانلود و ارسال کنم!\n"
+        f"📌 حداکثر حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت."
     )
 
-def run_download(url, user_id):
-    """تابع دانلود با تنظیمات پیشرفته برای عبور از فیلترینگ یوتیوب روی هاست ابری"""
-    ffmpeg_path = r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin' if os.name == 'nt' else None
-
+def run_download(url, output_template):
+    """دانلود با yt-dlp و استفاده از FFmpeg برای ترکیب کیفیت عالی"""
     ydl_opts = {
-        'outtmpl': f'dl_{user_id}.%(ext)s',
-        'format': 'bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best',
-        'merge_output_format': 'mp4',
+        'format': 'bestvideo+bestaudio/best',
+        'ffmpeg_location': r'C:\ffmpeg\ffmpeg-9.0.2-essentials_build\bin',
+        'outtmpl': output_template,
         'max_filesize': MAX_FILE_SIZE_MB * 1024 * 1024,
         'noplaylist': True,
-        'socket_timeout': 60,
-        'retries': 30,
-        'fragment_retries': 30,
-        # استفاده از ترکیب کلاینت‌های اندروید و وب با هدرهای واقعی برای دور زدن بلاک سرور
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-            }
-        },
+        'socket_timeout': 120,
+        'retries': 20,
+        'fragment_retries': 20,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Sec-Fetch-Mode': 'navigate',
-        },
-        'quiet': False,
-        'no_warnings': False,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
     }
-
-    if ffmpeg_path and os.path.exists(ffmpeg_path):
-        ydl_opts['ffmpeg_location'] = ffmpeg_path
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    if text == "/start" or text == "🔄 شروع مجدد / خروج":
-        if user_id in authorized_users:
-            authorized_users.remove(user_id)
-        await update.message.reply_text(
-            "🔄 ربات ریست شد!\n\nلطفاً رمز عبور را وارد نمایید:",
-            reply_markup=ReplyKeyboardRemove()
-        )
+    url = update.message.text.strip()
+    
+    if not url.startswith("http"):
+        await update.message.reply_text("❌ لطفاً یک لینک معتبر بفرست داداشم!")
         return
 
-    if user_id not in authorized_users:
-        if text == CORRECT_PASSWORD:
-            authorized_users.add(user_id)
-            await update.message.reply_text(
-                f"سلام عمو جواد! 🤖🔥\n\n"
-                f"لینک ویدیو رو بفرست تا با بالاترین کیفیت برات دانلود کنم!\n"
-                f"📌 سقف حجم مجاز: تا {MAX_FILE_SIZE_MB} مگابایت.",
-                reply_markup=restart_keyboard
-            )
-        else:
-            await update.message.reply_text("رمز عبور اشتباه است. لطفاً رمز عبور را درست وارد نمایید:")
-        return
+    status_msg = await update.message.reply_text("📥 در حال دانلود ویدیو و ترکیب با FFmpeg... صبور باش داداش 🙏")
 
-    url = text
-    if not url.startswith("http://") and not url.startswith("https://"):
-        await update.message.reply_text("❌ لطفاً یک لینک اینترنتی معتبر بفرست!")
-        return
-
-    for old_file in glob.glob(f"dl_{user_id}.*"):
+    output_filename = f"video_{update.effective_user.id}.mp4"
+    
+    if os.path.exists(output_filename):
         try:
-            os.remove(old_file)
+            os.remove(output_filename)
         except:
             pass
 
-    status_msg = await update.message.reply_text(
-        "📥 در حال دانلود و آماده‌سازی ویدیو... لطفاً صبور باش عمو جان 🙏"
-    )
-
     try:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run_download, url, user_id)
+        await loop.run_in_executor(None, run_download, url, output_filename)
 
-        matching_files = [f for f in glob.glob(f"dl_{user_id}.*") if not f.endswith('.part') and not f.endswith('.ytdl')]
-        
-        if not matching_files:
-            await status_msg.edit_text("❌ خطا: فایل دانلود شده پیدا نشد یا لینک پشتیبانی نمی‌شود!")
+        actual_file = output_filename
+        if not os.path.exists(actual_file):
+            for f in os.listdir('.'):
+                if f.startswith(f"video_{update.effective_user.id}"):
+                    actual_file = f
+                    break
+
+        if not os.path.exists(actual_file):
+            await status_msg.edit_text("❌ خطا: فایل دانلود شده پیدا نشد!")
             return
 
-        downloaded_file = matching_files[0]
-        file_size_mb = os.path.getsize(downloaded_file) / (1024 * 1024)
-
+        file_size_mb = os.path.getsize(actual_file) / (1024 * 1024)
         if file_size_mb > MAX_FILE_SIZE_MB:
             await status_msg.edit_text(f"❌ حجم ویدیو ({file_size_mb:.1f} مگابایت) بیشتر از حد مجاز ({MAX_FILE_SIZE_MB} مگابایت) است!")
-            os.remove(downloaded_file)
+            os.remove(actual_file)
             return
 
-        await status_msg.edit_text(f"📤 در حال ارسال ویدیو به تلگرام ({file_size_mb:.1f}MB)...")
+        await status_msg.edit_text("📤 در حال آپلود ویدیو به تلگرام (کمی صبر کنید)...")
         
-        with open(downloaded_file, 'rb') as video_file:
-            await update.message.reply_video(
-                video=video_file,
-                read_timeout=360,
-                write_timeout=360,
-                connect_timeout=60
-            )
+        with open(actual_file, 'rb') as video_file:
+            await update.message.reply_video(video=video_file, read_timeout=300, write_timeout=300, connect_timeout=60)
 
         await status_msg.delete()
 
     except Exception as e:
         logging.error(f"Error downloading: {e}")
         try:
-            await status_msg.edit_text(f"❌ خطا در پردازش یا دانلود:\n{str(e)[:300]}")
+            await status_msg.edit_text(f"❌ خطا در دانلود یا آپلود:\n`{str(e)}`", parse_mode="Markdown")
         except:
             pass
     finally:
-        for leftover in glob.glob(f"dl_{user_id}.*"):
-            try:
-                os.remove(leftover)
-            except:
-                pass
+        for f in os.listdir('.'):
+            if f.startswith(f"video_{update.effective_user.id}") and os.path.exists(f):
+                try:
+                    os.remove(f)
+                except:
+                    pass
 
 def main():
     if not BOT_TOKEN:
-        print("❌ متغیر BOT_TOKEN یافت نشد!")
+        print("❌ توکن یافت نشد!")
         return
 
-    threading.Thread(target=run_web_server, daemon=True).start()
-
-    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(360).write_timeout(360).connect_timeout(60).pool_timeout(60).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).read_timeout(300).write_timeout(300).connect_timeout(60).pool_timeout(60).build()
 
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🤖 ربات با موفقیت فعال شد...")
+    print("🤖 ربات با سقف 750 مگابایت روشن شد و آماده است...")
     application.run_polling()
 
 if __name__ == '__main__':
