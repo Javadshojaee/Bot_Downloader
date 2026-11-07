@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 import yt_dlp
+from flask import Flask, request
 
 # بارگذاری توکن از فایل .env
 load_dotenv()
