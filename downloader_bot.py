@@ -1,108 +1,219 @@
+import asyncio
+import logging
 import os
-import threading
-from flask import Flask, request
+from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 import yt_dlp
+from flask import Flask, request
 
-# توکن رباتی که دادی
-TOKEN = "AAGvB60AX9TurOopag9yqHOqkWdx9twpWuM"
+# بارگذاری توکن از فایل .env
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-app = Flask(__name__)
+# تنظیمات لاگینگ
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-# کانفیگ‌های ربات تلگرام
-telegram_app = ApplicationBuilder().token(TOKEN).build()
+# سقف حجم ویدیو (۶۵۰ مگابایت)
+MAX_FILE_SIZE_MB = 650
+MILESTONES = (10, 25, 37, 46, 55, 67, 77, 84, 99, 100)
 
-# حداکثر حجم مجاز (۴۸۰ مگابایت)
-MAX_FILE_SIZE = 480 * 1024 * 1024
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "سلام عمو جواد! 🤖🚀\n"
-        "لینک ویدیوی یوتیوب، اینستاگرام یا تیک‌تاک رو بفرست تا با کمک فلسک برات دانلودش کنم و بفرستم.\n"
-        "حواسم به محدودیت ۴۸۰ مگابایت هم هست!"
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.first_name if update.effective_user else "عمو جواد"
+    welcome_text = (
+        f"سلام {user_name} عزیز! 🚀🤖\n\n"
+        "لینک ویدیوی مورد نظرت (یوتیوب، شورتس، اینستاگرام، تیک‌تاک و...) رو بفرست "
+        "تا با درصدشمار پله‌پله برات دانلودش کنم و بفرستم!\n\n"
+        f"📌 نکته: حداکثر حجم پشتیبانی شده تا {MAX_FILE_SIZE_MB} مگابایت تنظیم شده است."
     )
+    await update.message.reply_text(welcome_text)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    
-    if not (url.startswith("http://") or url.startswith("https://")):
-        await update.message.reply_text("عزیز دل، لطفاً یک لینک معتبر بفرست!")
-        return
+def download_video_sync(target_url, status_msg, loop):
+    output_template = "downloaded_video.%(ext)s"
+    reported = set()
 
-    msg = await update.message.reply_text("⏳ در حال پردازش و دانلود ویدیو، صبور باش عمو جواد...")
+    # پاک کردن فایل‌های موقت قبلی برای جلوگیری از ارورهای تداخل
+    for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi', 'part', 'ytdl']:
+        old_file = f"downloaded_video.{ext}"
+        if os.path.exists(old_file):
+            try:
+                os.remove(old_file)
+            except:
+                pass
 
-    output_template = "downloaded_video.mp4"
+    def report_progress(text: str):
+        future = asyncio.run_coroutine_threadsafe(
+            status_msg.edit_text(text),
+            loop,
+        )
+        try:
+            future.result(timeout=2)
+        except Exception:
+            pass
+
+    def progress_hook(data):
+        if data.get("status") != "downloading":
+            return
+
+        total = data.get("total_bytes") or data.get("total_bytes_estimate")
+        downloaded = data.get("downloaded_bytes", 0)
+
+        if not total:
+            return
+
+        percent = min(99, int(downloaded * 100 / total))
+
+        for milestone in MILESTONES:
+            if percent >= milestone and milestone not in reported:
+                reported.add(milestone)
+                report_progress(f"⏳ {milestone}٪ از ویدیو دانلود شد...")
+                break
+
+    # تنظیمات کاملاً امن و سازگار با فرمت‌های مختلف بدون نیاز به ابزار جانبی
     ydl_opts = {
-        'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best',
+        'format': 'best[ext=mp4]/best',
         'outtmpl': output_template,
-        'max_filesize': MAX_FILE_SIZE,
         'noplaylist': True,
+        'ignoreerrors': True,
+        'no_warnings': True,
+        'socket_timeout': 30,
+        'continuedl': False,
+        'progress_hooks': [progress_hook],
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        }
     }
 
     try:
-        def download_video():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                return ydl.prepare_filename(info)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([target_url])
+    except Exception as e:
+        logging.warning(f"Primary download warning: {e}")
 
-        # اجرای دانلود در ترد جداگانه برای جلوگیری از بلاک شدن برنامه
-        file_path = await asyncio_to_thread_helper(download_video)
+    filename = None
+    for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi']:
+        test_name = f"downloaded_video.{ext}"
+        if os.path.exists(test_name):
+            filename = test_name
+            break
+    
+    if not filename:
+        files = [f for f in os.listdir('.') if f.startswith('downloaded_video') and not f.endswith('.part') and not f.endswith('.ytdl')]
+        if files:
+            filename = files[0]
 
-        if file_path and os.path.exists(file_path):
-            file_size = os.path.getsize(file_path)
+    # حالت پشتیبان (Fallback) برای لینک‌های بسیار سخت‌گیر
+    if not filename or not os.path.exists(filename):
+        fallback_opts = {
+            'format': 'b',
+            'outtmpl': output_template,
+            'noplaylist': True,
+            'quiet': True,
+            'continuedl': False,
+            'progress_hooks': [progress_hook],
+        }
+        try:
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                ydl.download([target_url])
+        except Exception:
+            pass
             
-            if file_size > MAX_FILE_SIZE:
-                await msg.edit_text("❌ حجم ویدیوی دانلود شده بیشتر از ۴۸۰ مگابایت است.")
-                os.remove(file_path)
-                return
+        for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi']:
+            test_name = f"downloaded_video.{ext}"
+            if os.path.exists(test_name):
+                filename = test_name
+                break
 
-            await msg.edit_text("🚀 دانلود انجام شد، در حال ارسال به تلگرام...")
+    if not filename or not os.path.exists(filename):
+        raise ValueError("متأسفانه ویدیو دانلود نشد یا فرمت آن توسط پلتفرم محدود شده است.")
+
+    filesize_bytes = os.path.getsize(filename)
+    filesize_mb = filesize_bytes / (1024 * 1024)
+    
+    if filesize_mb > MAX_FILE_SIZE_MB:
+        if os.path.exists(filename):
+            os.remove(filename)
+        raise ValueError(f"حجم ویدیو ({filesize_mb:.1f} مگابایت) بیشتر از سقف مجاز {MAX_FILE_SIZE_MB} مگابایت است!")
+        
+    return filename, filesize_mb
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+        
+    url = update.message.text.strip()
+    
+    if not (url.startswith("http://") or url.startswith("https://")):
+        await update.message.reply_text("❌ لطفاً یک لینک معتبر (شروع شونده با http یا https) بفرستید.")
+        return
+
+    status_msg = await update.message.reply_text("📥 در حال شروع دانلود ویدیو...")
+    loop = asyncio.get_running_loop()
+
+    filename = None
+    try:
+        filename, filesize_mb = await asyncio.to_thread(
+            download_video_sync, url, status_msg, loop
+        )
+
+        await status_msg.edit_text(f"📤 در حال آپلود ویدیو به تلگرام (حجم: {filesize_mb:.1f} مگابایت)...")
+
+        caption_text = (
+            f"📦 **حجم ویدیو:** {filesize_mb:.1f} مگابایت\n\n"
+            f"✅ با موفقیت دانلود و ارسال شد!"
+        )
+
+        with open(filename, 'rb') as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption=caption_text,
+                parse_mode="Markdown",
+                read_timeout=300,
+                write_timeout=300,
+            )
             
-            with open(file_path, 'rb') as video_file:
-                await update.message.reply_video(
-                    video=video_file,
-                    caption="✨ ویدیوی شما آماده است!",
-                    supports_streaming=True
-                )
-            
-            os.remove(file_path)
-            await msg.delete()
-        else:
-            await msg.edit_text("❌ متأسفانه دانلود ویدیو با خطا مواجه شد.")
+        await status_msg.delete()
 
     except Exception as e:
-        await msg.edit_text(f"❌ خطایی رخ داد: {str(e)}")
-        if os.path.exists(output_template):
-            os.remove(output_template)
+        error_str = str(e)
+        logging.error(f"Error downloading: {error_str}")
+        try:
+            await status_msg.edit_text(f"❌ خطایی رخ داد:\n{error_str[:300]}")
+        except Exception:
+            pass
 
-# تابع کمکی برای اجرای کدهای سنکرون در محیط آسنکرون
-def asyncio_to_thread_helper(func):
-    import asyncio
-    return asyncio.run_coroutine_threadsafe(asyncio.to_thread(func), telegram_app.bot_data.get('loop', asyncio.get_event_loop())).result()
+    finally:
+        if filename and os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except:
+                pass
 
-# افزودن هندلرها به اپلیکیشن تلگرام
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+def main():
+    if not BOT_TOKEN:
+        print("❌ توکن ربات پیدا نشد! لطفاً فایل .env را بررسی کنید.")
+        return
 
-@app.route("/")
-def home():
-    return "Bot is running with Flask and Telegram!"
+    # اضافه کردن تنظیمات پراکسی برای رد شدن از فیلترینگ در لوکال
+    # (اگر از V2Ray یا ساب‌سکرایبشن استفاده می‌کنی، معمولاً روی پورت 2080 یا 10809 لوکال پورت داره)
+    PROXY_URL = "http://127.0.0.1:2080" # یا پراکسی تلگرام خودت (مثل پورت سس یا http)
 
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    """دریافت آپدیت‌ها از طریق وب‌هوک تلگرام"""
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    
-    # اجرای پردازش پیام در پس‌زمینه
-    async def process():
-        async with telegram_app:
-            await telegram_app.initialize()
-            await telegram_app.process_update(update)
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .proxy_url(PROXY_URL)  # <--- اضافه شدن پراکسی برای رفع ارور اتصال
+        .get_updates_proxy_url(PROXY_URL) # <--- برای دریافت آپدیت‌ها
+        .connect_timeout(30.0)
+        .read_timeout(60.0)
+        .write_timeout(60.0)
+        .build()
+    )
 
-    threading.Thread(target=lambda: asyncio.run(process())).start()
-    return "OK", 200
+    app.add_handler(CommandHandler("start", start_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-if __name__ == "__main__":
-    # اگر خواستید به صورت لوکال با پایتون تست کنید
-    app.run(host="0.0.0.0", port=5000)
+    print("🤖 Application started successfully! Bot is running without errors...")
+    app.run_polling()
