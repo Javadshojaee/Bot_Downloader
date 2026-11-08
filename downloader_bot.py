@@ -1,219 +1,297 @@
-import asyncio
+import hmac
 import logging
 import os
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import BoundedSemaphore
+from urllib.parse import urlsplit
+
+import requests
 import yt_dlp
-from flask import Flask, request
+from flask import Flask, abort, jsonify, request
+from requests_toolbelt.multipart.encoder import MultipartEncoder
 
-# بارگذاری توکن از فایل .env
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# تنظیمات لاگینگ
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
+
+# فقط وقتی Bot API Server شخصی داری این متغیر را تنظیم کن.
+LOCAL_API_URL = os.getenv("BOT_API_BASE_URL", "").rstrip("/")
+API_BASE_URL = LOCAL_API_URL or "https://api.telegram.org"
+
+MAX_BYTES = 480_000_000 if LOCAL_API_URL else 49_000_000
+MAX_MB = 480 if LOCAL_API_URL else 49
+
+ALLOWED_DOMAINS = (
+    "youtube.com",
+    "youtu.be",
+    "instagram.com",
+    "tiktok.com",
 )
 
-# سقف حجم ویدیو (۶۵۰ مگابایت)
-MAX_FILE_SIZE_MB = 650
-MILESTONES = (10, 25, 37, 46, 55, 67, 77, 84, 99, 100)
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name if update.effective_user else "عمو جواد"
-    welcome_text = (
-        f"سلام {user_name} عزیز! 🚀🤖\n\n"
-        "لینک ویدیوی مورد نظرت (یوتیوب، شورتس، اینستاگرام، تیک‌تاک و...) رو بفرست "
-        "تا با درصدشمار پله‌پله برات دانلودش کنم و بفرستم!\n\n"
-        f"📌 نکته: حداکثر حجم پشتیبانی شده تا {MAX_FILE_SIZE_MB} مگابایت تنظیم شده است."
+executor = ThreadPoolExecutor(max_workers=1)
+job_slots = BoundedSemaphore(2)  # یک دانلود فعال، یک درخواست در صف
+logging.basicConfig(level=logging.INFO)
+
+
+def telegram_url(method):
+    return f"{API_BASE_URL}/bot{BOT_TOKEN}/{method}"
+
+
+def send_text(chat_id, text):
+    response = requests.post(
+        telegram_url("sendMessage"),
+        data={"chat_id": str(chat_id), "text": text},
+        timeout=(10, 30),
     )
-    await update.message.reply_text(welcome_text)
+    response.raise_for_status()
+    result = response.json()
+    if not result.get("ok"):
+        raise RuntimeError(result.get("description", "Telegram error"))
 
-def download_video_sync(target_url, status_msg, loop):
-    output_template = "downloaded_video.%(ext)s"
-    reported = set()
 
-    # پاک کردن فایل‌های موقت قبلی برای جلوگیری از ارورهای تداخل
-    for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi', 'part', 'ytdl']:
-        old_file = f"downloaded_video.{ext}"
-        if os.path.exists(old_file):
-            try:
-                os.remove(old_file)
-            except:
-                pass
-
-    def report_progress(text: str):
-        future = asyncio.run_coroutine_threadsafe(
-            status_msg.edit_text(text),
-            loop,
+def send_video(chat_id, file_path):
+    # MultipartEncoder فایل بزرگ را بدون بارگذاری کامل در RAM ارسال می‌کند.
+    with file_path.open("rb") as video_file:
+        body = MultipartEncoder(
+            fields={
+                "chat_id": str(chat_id),
+                "supports_streaming": "true",
+                "video": (file_path.name, video_file, "video/mp4"),
+            }
         )
-        try:
-            future.result(timeout=2)
-        except Exception:
-            pass
+        response = requests.post(
+            telegram_url("sendVideo"),
+            data=body,
+            headers={"Content-Type": body.content_type},
+            timeout=(15, 900),
+        )
 
-    def progress_hook(data):
-        if data.get("status") != "downloading":
-            return
+    response.raise_for_status()
+    result = response.json()
+    if not result.get("ok"):
+        raise RuntimeError(result.get("description", "Telegram error"))
 
-        total = data.get("total_bytes") or data.get("total_bytes_estimate")
-        downloaded = data.get("downloaded_bytes", 0)
 
-        if not total:
-            return
+def is_supported_url(text):
+    try:
+        parsed = urlsplit(text)
+        host = (parsed.hostname or "").lower()
+        return (
+            parsed.scheme == "https"
+            and not parsed.username
+            and any(
+                host == domain or host.endswith("." + domain)
+                for domain in ALLOWED_DOMAINS
+            )
+        )
+    except ValueError:
+        return False
 
-        percent = min(99, int(downloaded * 100 / total))
 
-        for milestone in MILESTONES:
-            if percent >= milestone and milestone not in reported:
-                reported.add(milestone)
-                report_progress(f"⏳ {milestone}٪ از ویدیو دانلود شد...")
-                break
+def estimated_size(fmt, duration):
+    for key in ("filesize", "filesize_approx"):
+        value = fmt.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
 
-    # تنظیمات کاملاً امن و سازگار با فرمت‌های مختلف بدون نیاز به ابزار جانبی
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best',
-        'outtmpl': output_template,
-        'noplaylist': True,
-        'ignoreerrors': True,
-        'no_warnings': True,
-        'socket_timeout': 30,
-        'continuedl': False,
-        'progress_hooks': [progress_hook],
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        }
+    bitrate = fmt.get("tbr")
+    if bitrate and duration:
+        return int(bitrate * 125 * duration)  # kb/s -> bytes
+
+    return None
+
+
+def resolution(fmt):
+    width = fmt.get("width")
+    height = fmt.get("height")
+    if width and height:
+        return min(width, height)  # برای ویدیوهای عمودی هم درست است
+    return height or width or 0
+
+
+def choose_format(info):
+    formats = info.get("formats") or [info]
+    duration = info.get("duration")
+
+    def has_video(fmt):
+        return fmt.get("vcodec") not in (None, "none")
+
+    def has_audio(fmt):
+        return fmt.get("acodec") not in (None, "none")
+
+    progressive = [
+        f for f in formats
+        if f.get("ext") == "mp4"
+        and f.get("format_id")
+        and has_video(f)
+        and has_audio(f)
+    ]
+    video_only = [
+        f for f in formats
+        if f.get("ext") == "mp4"
+        and f.get("format_id")
+        and has_video(f)
+        and not has_audio(f)
+    ]
+    audio_only = [
+        f for f in formats
+        if f.get("ext") == "m4a"
+        and f.get("format_id")
+        and has_audio(f)
+        and not has_video(f)
+    ]
+
+    candidates = []
+
+    for video in progressive:
+        candidates.append((
+            video["format_id"],
+            estimated_size(video, duration),
+            resolution(video),
+        ))
+
+    for video in video_only:
+        for audio in audio_only:
+            video_size = estimated_size(video, duration)
+            audio_size = estimated_size(audio, duration)
+            combined = (
+                video_size + audio_size
+                if video_size is not None and audio_size is not None
+                else None
+            )
+            candidates.append((
+                f'{video["format_id"]}+{audio["format_id"]}',
+                combined,
+                resolution(video),
+            ))
+
+    # برای خطای تخمین حجم و ادغام صدا/تصویر کمی حاشیه می‌گذاریم.
+    budget = int(MAX_BYTES * 0.93)
+    fitting = [c for c in candidates if c[1] is not None and c[1] <= budget]
+
+    if fitting:
+        return max(fitting, key=lambda c: (c[2], c[1]))[0]
+
+    # وقتی سایت حجم را اعلام نمی‌کند، کم‌حجم‌ترین کیفیت احتمالی
+    # را امتحان می‌کنیم؛ کنترل نهایی حجم همچنان برقرار است.
+    unknown = [c for c in candidates if c[1] is None]
+    if unknown:
+        return min(unknown, key=lambda c: c[2])[0]
+
+    raise ValueError(f"کیفیت MP4 مناسبی زیر سقف {MAX_MB} مگابایت پیدا نشد.")
+
+
+def download_video(url, folder):
+    def progress_hook(status):
+        if (
+            status.get("status") == "downloading"
+            and (status.get("downloaded_bytes") or 0) > MAX_BYTES
+        ):
+            raise ValueError(f"حجم دانلود از {MAX_MB} مگابایت گذشت.")
+
+    options = {
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_BYTES,
+        "progress_hooks": [progress_hook],
+        "outtmpl": str(folder / "%(id)s.%(ext)s"),
+        "merge_output_format": "mp4",
     }
 
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if not info or info.get("entries"):
+        raise ValueError("لطفاً لینک یک ویدیوی عمومی بفرست، نه پلی‌لیست.")
+
+    options["format"] = choose_format(info)
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
+
+    videos = [p for p in folder.glob("*.mp4") if p.is_file()]
+    if not videos:
+        raise ValueError("فایل MP4 قابل ارسال ساخته نشد.")
+
+    video = max(videos, key=lambda p: p.stat().st_size)
+    if video.stat().st_size > MAX_BYTES:
+        raise ValueError(f"حجم نهایی ویدیو بیشتر از {MAX_MB} مگابایت شد.")
+
+    return video
+
+
+def process_message(chat_id, text):
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([target_url])
-    except Exception as e:
-        logging.warning(f"Primary download warning: {e}")
-
-    filename = None
-    for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi']:
-        test_name = f"downloaded_video.{ext}"
-        if os.path.exists(test_name):
-            filename = test_name
-            break
-    
-    if not filename:
-        files = [f for f in os.listdir('.') if f.startswith('downloaded_video') and not f.endswith('.part') and not f.endswith('.ytdl')]
-        if files:
-            filename = files[0]
-
-    # حالت پشتیبان (Fallback) برای لینک‌های بسیار سخت‌گیر
-    if not filename or not os.path.exists(filename):
-        fallback_opts = {
-            'format': 'b',
-            'outtmpl': output_template,
-            'noplaylist': True,
-            'quiet': True,
-            'continuedl': False,
-            'progress_hooks': [progress_hook],
-        }
-        try:
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                ydl.download([target_url])
-        except Exception:
-            pass
-            
-        for ext in ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi']:
-            test_name = f"downloaded_video.{ext}"
-            if os.path.exists(test_name):
-                filename = test_name
-                break
-
-    if not filename or not os.path.exists(filename):
-        raise ValueError("متأسفانه ویدیو دانلود نشد یا فرمت آن توسط پلتفرم محدود شده است.")
-
-    filesize_bytes = os.path.getsize(filename)
-    filesize_mb = filesize_bytes / (1024 * 1024)
-    
-    if filesize_mb > MAX_FILE_SIZE_MB:
-        if os.path.exists(filename):
-            os.remove(filename)
-        raise ValueError(f"حجم ویدیو ({filesize_mb:.1f} مگابایت) بیشتر از سقف مجاز {MAX_FILE_SIZE_MB} مگابایت است!")
-        
-    return filename, filesize_mb
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-        
-    url = update.message.text.strip()
-    
-    if not (url.startswith("http://") or url.startswith("https://")):
-        await update.message.reply_text("❌ لطفاً یک لینک معتبر (شروع شونده با http یا https) بفرستید.")
-        return
-
-    status_msg = await update.message.reply_text("📥 در حال شروع دانلود ویدیو...")
-    loop = asyncio.get_running_loop()
-
-    filename = None
-    try:
-        filename, filesize_mb = await asyncio.to_thread(
-            download_video_sync, url, status_msg, loop
-        )
-
-        await status_msg.edit_text(f"📤 در حال آپلود ویدیو به تلگرام (حجم: {filesize_mb:.1f} مگابایت)...")
-
-        caption_text = (
-            f"📦 **حجم ویدیو:** {filesize_mb:.1f} مگابایت\n\n"
-            f"✅ با موفقیت دانلود و ارسال شد!"
-        )
-
-        with open(filename, 'rb') as video_file:
-            await update.message.reply_video(
-                video=video_file,
-                caption=caption_text,
-                parse_mode="Markdown",
-                read_timeout=300,
-                write_timeout=300,
+        if text.startswith("/start"):
+            send_text(
+                chat_id,
+                f"سلام! لینک ویدیوی عمومی یوتیوب، اینستاگرام یا تیک‌تاک "
+                f"را بفرست. سقف ارسال فعلی: {MAX_MB} مگابایت.",
             )
-            
-        await status_msg.delete()
+            return
 
-    except Exception as e:
-        error_str = str(e)
-        logging.error(f"Error downloading: {error_str}")
+        if not is_supported_url(text):
+            send_text(
+                chat_id,
+                "لطفاً لینک HTTPS ویدیوی عمومی از یوتیوب، اینستاگرام "
+                "یا تیک‌تاک بفرست.",
+            )
+            return
+
+        send_text(chat_id, "⏳ لینک دریافت شد؛ دارم ویدیو را آماده می‌کنم...")
+
+        with tempfile.TemporaryDirectory(prefix="video_bot_") as temp:
+            video = download_video(text, Path(temp))
+            send_video(chat_id, video)
+
+    except ValueError as exc:
+        send_text(chat_id, f"❌ {exc}")
+    except Exception:
+        app.logger.exception("Video processing failed")
         try:
-            await status_msg.edit_text(f"❌ خطایی رخ داد:\n{error_str[:300]}")
+            send_text(
+                chat_id,
+                "❌ دانلود یا ارسال انجام نشد. ممکن است ویدیو خصوصی باشد، "
+                "سایت دسترسی را محدود کرده باشد یا حجم آن زیاد باشد.",
+            )
         except Exception:
-            pass
-
+            app.logger.exception("Could not report error to user")
     finally:
-        if filename and os.path.exists(filename):
-            try:
-                os.remove(filename)
-            except:
-                pass
+        job_slots.release()
 
-def main():
-    if not BOT_TOKEN:
-        print("❌ توکن ربات پیدا نشد! لطفاً فایل .env را بررسی کنید.")
-        return
 
-    # اضافه کردن تنظیمات پراکسی برای رد شدن از فیلترینگ در لوکال
-    # (اگر از V2Ray یا ساب‌سکرایبشن استفاده می‌کنی، معمولاً روی پورت 2080 یا 10809 لوکال پورت داره)
-    PROXY_URL = "http://127.0.0.1:2080" # یا پراکسی تلگرام خودت (مثل پورت سس یا http)
+@app.get("/")
+def health():
+    return "Bot is running", 200
 
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .proxy_url(PROXY_URL)  # <--- اضافه شدن پراکسی برای رفع ارور اتصال
-        .get_updates_proxy_url(PROXY_URL) # <--- برای دریافت آپدیت‌ها
-        .connect_timeout(30.0)
-        .read_timeout(60.0)
-        .write_timeout(60.0)
-        .build()
+
+@app.post("/webhook")
+def webhook():
+    received_secret = request.headers.get(
+        "X-Telegram-Bot-Api-Secret-Token", ""
     )
+    if not hmac.compare_digest(received_secret, WEBHOOK_SECRET):
+        abort(403)
 
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    payload = request.get_json(silent=True) or {}
+    message = payload.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    text = (message.get("text") or "").strip()
 
-    print("🤖 Application started successfully! Bot is running without errors...")
-    app.run_polling()
+    if chat_id and text:
+        if not job_slots.acquire(blocking=False):
+            return jsonify(ok=False, error="busy"), 503
+
+        try:
+            executor.submit(process_message, chat_id, text)
+        except Exception:
+            job_slots.release()
+            raise
+
+    return jsonify(ok=True), 200

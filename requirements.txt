@@ -1,11 +1,5 @@
-pyTelegramBotAPI
-yt-dlp
-flask
-python-dotenv
+Flask
+gunicorn
 requests
-urllib3
-
-python-telegram-bot
-yt-dlp
-python-dotenv
-flask
+requests-toolbelt
+yt-dlp[default]
