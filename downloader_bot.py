@@ -1,310 +1,195 @@
-
+import logging
 import os
 import re
-import asyncio
-import logging
 import tempfile
-import threading
-
+import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
-import yt_dlp
+import requests
+from yt_dlp import YoutubeDL
 
-from flask import Flask, jsonify
-from dotenv import load_dotenv
+TOKEN = os.environ.get("BOT_TOKEN")
+if not TOKEN:
+    raise SystemExit("متغیر BOT_TOKEN تنظیم نشده است.")
 
-from telegram import Update
-from telegram.constants import ChatAction
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+API = f"https://api.telegram.org/bot{TOKEN}"
+MAX_BYTES = 49 * 1024 * 1024  # کمی کمتر از سقف ۵۰ مگابایتی تلگرام
+
+ALLOWED_DOMAINS = (
+    "aparat.com",
+    "youtube.com",
+    "youtu.be",
+    "tiktok.com",
+    "instagram.com",
 )
 
-# -----------------------
-# Configuration
-# -----------------------
-
-load_dotenv()
-
-TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.getenv("PORT", 8080))
-
-MAX_SIZE = 49 * 1024 * 1024
-
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# -----------------------
-# Flask Server
-# -----------------------
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return jsonify({
-        "status": "online",
-        "bot": "Video Downloader Bot"
-    })
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "healthy"})
 
 
-def run_flask():
-    app.run(
-        host="0.0.0.0",
-        port=PORT,
-        use_reloader=False
+def telegram(method, *, timeout=60, **kwargs):
+    response = requests.post(
+        f"{API}/{method}",
+        timeout=timeout,
+        **kwargs,
     )
+    response.raise_for_status()
+    result = response.json()
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("description", "خطای تلگرام"))
+
+    return result["result"]
 
 
-# -----------------------
-# Supported Websites
-# -----------------------
-
-ALLOWED_HOSTS = {
-    "youtube.com",
-    "www.youtube.com",
-    "youtu.be",
-    "m.youtube.com",
-    "aparat.com",
-    "www.aparat.com",
-    "instagram.com",
-    "www.instagram.com",
-    "tiktok.com",
-    "www.tiktok.com",
-    "vm.tiktok.com",
-    "vt.tiktok.com",
-}
+def say(chat_id, text):
+    telegram("sendMessage", data={"chat_id": chat_id, "text": text})
 
 
-def check_url(text):
-
-    match = re.search(r"https?://\S+", text)
-
+def extract_allowed_url(text):
+    match = re.search(r"https?://[^\s<>]+", text)
     if not match:
         return None
 
-    url = match.group(0).rstrip(".,!?)]}>")
-
-    parsed = urlparse(url)
+    url = match.group(0).rstrip(".,!?)،؛]}")
+    parsed = urlsplit(url)
     host = (parsed.hostname or "").lower()
 
     if parsed.scheme not in ("http", "https"):
         return None
 
-    if host not in ALLOWED_HOSTS:
+    if parsed.username or parsed.password:
+        return None
+
+    if not any(
+        host == domain or host.endswith("." + domain)
+        for domain in ALLOWED_DOMAINS
+    ):
         return None
 
     return url
 
 
-# -----------------------
-# Download Function
-# -----------------------
-
-def download_video(url, folder):
-
-    output = str(
-        Path(folder) / "%(title).70s-%(id)s.%(ext)s"
-    )
+def download_video(url, directory):
+    def check_size(progress):
+        if progress.get("status") == "downloading":
+            downloaded = progress.get("downloaded_bytes", 0)
+            if downloaded > MAX_BYTES:
+                raise ValueError("حجم ویدیو از سقف ارسال بات بیشتر است.")
 
     options = {
-        "outtmpl": output,
-        "format": "best[ext=mp4]/best",
+        "format": "b[height<=480]/bv*[height<=480]+ba/best",
         "merge_output_format": "mp4",
         "noplaylist": True,
-        "max_filesize": MAX_SIZE,
-        "socket_timeout": 25,
-        "retries": 2,
+        "outtmpl": str(directory / "%(id)s.%(ext)s"),
+        "restrictfilenames": True,
         "quiet": True,
         "no_warnings": True,
+        "socket_timeout": 20,
+        "retries": 2,
+        "progress_hooks": [check_size],
     }
 
-    with yt_dlp.YoutubeDL(options) as ydl:
+    with YoutubeDL(options) as downloader:
+        downloader.download([url])
 
-        info = ydl.extract_info(url, download=True)
+    files = [
+        path for path in directory.iterdir()
+        if path.is_file()
+        and not path.name.endswith((".part", ".ytdl"))
+    ]
 
-        requested = info.get("requested_downloads") or []
+    if not files:
+        raise RuntimeError("فایل ویدیویی دریافت نشد.")
 
-        files = [
-            Path(item["filepath"])
-            for item in requested
-            if item.get("filepath")
-            and Path(item["filepath"]).is_file()
-        ]
+    video = max(files, key=lambda path: path.stat().st_size)
 
-        if not files:
-            files = [
-                p for p in Path(folder).iterdir()
-                if p.is_file()
-            ]
+    if video.stat().st_size > MAX_BYTES:
+        raise ValueError("حجم ویدیو از سقف ارسال بات بیشتر است.")
 
-        if not files:
-            raise Exception("Video file not found")
-
-        files.sort(
-            key=lambda p: (
-                p.suffix.lower() != ".mp4",
-                -p.stat().st_size
-            )
-        )
-
-        video = files[0]
-
-        if video.stat().st_size > MAX_SIZE:
-            raise ValueError("Video is too large")
-
-        return video
+    return video
 
 
-# -----------------------
-# Telegram Commands
-# -----------------------
+def handle_message(message):
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
+    text = message.get("text", "").strip()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "سلام 👋\n\n"
-        "به ربات دانلود ویدیو خوش اومدی!\n\n"
-        "لینک عمومی ویدیوت رو بفرست:\n\n"
-        "YouTube ✅\n"
-        "Aparat ✅\n"
-        "Instagram ✅\n"
-        "TikTok ✅"
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "برای دانلود ویدیو فقط لینک عمومی رو ارسال کن."
-    )
-
-
-# -----------------------
-# Handle Links
-# -----------------------
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    message = update.effective_message
-
-    url = check_url(message.text or "")
-
-    if not url:
-
-        await message.reply_text(
-            "❌ لطفاً یک لینک معتبر ارسال کن."
-        )
-
+    if not chat_id:
         return
 
-    status = await message.reply_text(
-        "⏳ در حال آماده‌سازی ویدیو..."
-    )
+    if text.startswith("/start"):
+        say(
+            chat_id,
+            "سلام! لینک ویدیوی عمومی آپارات، یوتیوب، تیک‌تاک "
+            "یا اینستاگرام را بفرست تا دانلودش کنم."
+        )
+        return
+
+    url = extract_allowed_url(text)
+    if not url:
+        say(chat_id, "یک لینک معتبر از آپارات، یوتیوب، تیک‌تاک یا اینستاگرام بفرست.")
+        return
+
+    say(chat_id, "دارم ویدیو را دانلود می‌کنم؛ کمی صبر کن…")
 
     try:
+        with tempfile.TemporaryDirectory() as temp:
+            video = download_video(url, Path(temp))
+            method = "sendVideo" if video.suffix.lower() == ".mp4" else "sendDocument"
+            field = "video" if method == "sendVideo" else "document"
 
-        with tempfile.TemporaryDirectory() as folder:
-
-            video_path = await asyncio.to_thread(
-                download_video,
-                url,
-                folder
-            )
-
-            await status.edit_text(
-                "📤 در حال ارسال ویدیو..."
-            )
-
-            await context.bot.send_chat_action(
-                chat_id=message.chat_id,
-                action=ChatAction.UPLOAD_VIDEO
-            )
-
-            with open(video_path, "rb") as video:
-
-                await message.reply_video(
-                    video=video,
-                    supports_streaming=True,
-                    read_timeout=120,
-                    write_timeout=120,
-                    connect_timeout=30
+            with video.open("rb") as file:
+                telegram(
+                    method,
+                    timeout=180,
+                    data={"chat_id": chat_id},
+                    files={field: (video.name, file)},
                 )
 
-        await status.delete()
-
     except ValueError as error:
-
-        await status.edit_text(f"❌ {error}")
-
+        say(chat_id, str(error))
     except Exception:
-
-        logger.exception("Download error")
-
-        await status.edit_text(
-            "❌ دانلود انجام نشد.\n"
-            "لینک ممکن است خصوصی یا غیرقابل دسترس باشد."
+        logging.exception("Download or upload failed")
+        say(
+            chat_id,
+            "دانلود یا ارسال این لینک ممکن نشد. اگر محتوا خصوصی است، "
+            "به ورود نیاز دارد یا سایت روش دسترسی‌اش را تغییر داده، "
+            "ممکن است این بات نتواند آن را دریافت کند."
         )
 
 
-# -----------------------
-# Start Telegram Bot
-# -----------------------
+def main():
+    # اگر قبلاً برای بات webhook تنظیم شده باشد، polling کار نمی‌کند.
+    telegram("deleteWebhook", data={"drop_pending_updates": False})
 
-async def start_bot():
+    offset = None
+    logging.info("Bot is running")
 
-    telegram_app = (
-        Application.builder()
-        .token(TOKEN)
-        .build()
-    )
+    while True:
+        try:
+            updates = telegram(
+                "getUpdates",
+                timeout=35,
+                json={
+                    "offset": offset,
+                    "timeout": 25,
+                    "allowed_updates": ["message"],
+                },
+            )
 
-    telegram_app.add_handler(
-        CommandHandler("start", start)
-    )
+            for update in updates:
+                offset = update["update_id"] + 1
+                if "message" in update:
+                    handle_message(update["message"])
 
-    telegram_app.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    telegram_app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_message
-        )
-    )
-
-    await telegram_app.initialize()
-    await telegram_app.start()
-    await telegram_app.updater.start_polling()
-
-    logger.info("Telegram bot started")
-
-    return telegram_app
+        except requests.RequestException:
+            logging.exception("Telegram connection error")
+            time.sleep(5)
+        except Exception:
+            logging.exception("Unexpected bot error")
+            time.sleep(5)
 
 
 if __name__ == "__main__":
-
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN is missing")
-
-    # Start Flask in background
-    flask_thread = threading.Thread(
-        target=run_flask,
-        daemon=True
-    )
-
-    flask_thread.start()
-
-    # Start Telegram bot
-    asyncio.run(
-        start_bot()
-    )
+    main()
